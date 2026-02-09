@@ -120,8 +120,14 @@ export const LeadScreen = () => {
         setCanAssign(hasPermission);
     };
 
+    const [canViewUsers, setCanViewUsers] = useState(false); // Added state
+
+    // ... (existing code)
+
     const fetchUsers = async () => {
         const hasPermission = await authService.hasPermission('user', 'read');
+        setCanViewUsers(hasPermission);
+
         if (hasPermission) {
             try {
                 const data = await usersApi.getUsers();
@@ -629,6 +635,7 @@ export const LeadScreen = () => {
                 }}
                 users={users}
                 initialFilters={filters}
+                canViewUsers={canViewUsers}
             />
         </SafeAreaView >
     );

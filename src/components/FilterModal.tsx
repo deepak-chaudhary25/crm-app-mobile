@@ -12,9 +12,10 @@ interface FilterModalProps {
     onApply: (filters: any) => void;
     users: any[];
     initialFilters: any;
+    canViewUsers?: boolean;
 }
 
-export const FilterModal = ({ visible, onClose, onApply, users, initialFilters }: FilterModalProps) => {
+export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, canViewUsers = false }: FilterModalProps) => {
     const { colors, isDark } = useAppTheme();
 
     const [assignedTo, setAssignedTo] = useState('');
@@ -107,64 +108,68 @@ export const FilterModal = ({ visible, onClose, onApply, users, initialFilters }
 
                     <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
                         {/* Users Dropdown */}
-                        <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Assigned To</Text>
+                        {canViewUsers && (
+                            <>
+                                <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Assigned To</Text>
 
-                        <TouchableOpacity
-                            style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.inputBackground }]}
-                            onPress={() => setIsUserDropdownOpen(!isUserDropdownOpen)}
-                        >
-                            <Text style={[styles.dropdownText, { color: assignedTo ? colors.textPrimary : colors.textSecondary }]}>
-                                {getSelectedUserName()}
-                            </Text>
-                            <Icon name={isUserDropdownOpen ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
-                        </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                                    onPress={() => setIsUserDropdownOpen(!isUserDropdownOpen)}
+                                >
+                                    <Text style={[styles.dropdownText, { color: assignedTo ? colors.textPrimary : colors.textSecondary }]}>
+                                        {getSelectedUserName()}
+                                    </Text>
+                                    <Icon name={isUserDropdownOpen ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
+                                </TouchableOpacity>
 
-                        {isUserDropdownOpen && (
-                            <View style={[styles.dropdownList, { borderColor: colors.border, backgroundColor: colors.card }]}>
-                                {/* Search Input */}
-                                <View style={[styles.searchContainer, { borderBottomColor: colors.border }]}>
-                                    <View style={{ marginRight: 8 }}>
-                                        <Icon name="search" size={20} color={colors.textSecondary} />
-                                    </View>
-                                    <TextInput
-                                        style={[styles.searchInput, { color: colors.textPrimary }]}
-                                        placeholder="Search user..."
-                                        placeholderTextColor={colors.textSecondary}
-                                        value={userSearchQuery}
-                                        onChangeText={setUserSearchQuery}
-                                    />
-                                </View>
-
-                                <ScrollView nestedScrollEnabled={true} style={{ maxHeight: verticalScale(200) }}>
-                                    <TouchableOpacity
-                                        style={[styles.dropdownItem, !assignedTo && { backgroundColor: colors.primary + '20' }]}
-                                        onPress={() => {
-                                            setAssignedTo('');
-                                            setIsUserDropdownOpen(false);
-                                        }}
-                                    >
-                                        <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>All Users</Text>
-                                    </TouchableOpacity>
-                                    {filteredUsers.map(user => (
-                                        <TouchableOpacity
-                                            key={user._id}
-                                            style={[styles.dropdownItem, assignedTo === user._id && { backgroundColor: colors.primary + '20' }]}
-                                            onPress={() => {
-                                                setAssignedTo(user._id);
-                                                setIsUserDropdownOpen(false);
-                                            }}
-                                        >
-                                            <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>{user.name}</Text>
-                                            <Text style={[styles.itemSubtitle, { color: colors.textSecondary }]}>{user.email}</Text>
-                                        </TouchableOpacity>
-                                    ))}
-                                    {filteredUsers.length === 0 && (
-                                        <View style={{ padding: 16, alignItems: 'center' }}>
-                                            <Text style={{ color: colors.textSecondary }}>No users found</Text>
+                                {isUserDropdownOpen && (
+                                    <View style={[styles.dropdownList, { borderColor: colors.border, backgroundColor: colors.card }]}>
+                                        {/* Search Input */}
+                                        <View style={[styles.searchContainer, { borderBottomColor: colors.border }]}>
+                                            <View style={{ marginRight: 8 }}>
+                                                <Icon name="search" size={20} color={colors.textSecondary} />
+                                            </View>
+                                            <TextInput
+                                                style={[styles.searchInput, { color: colors.textPrimary }]}
+                                                placeholder="Search user..."
+                                                placeholderTextColor={colors.textSecondary}
+                                                value={userSearchQuery}
+                                                onChangeText={setUserSearchQuery}
+                                            />
                                         </View>
-                                    )}
-                                </ScrollView>
-                            </View>
+
+                                        <ScrollView nestedScrollEnabled={true} style={{ maxHeight: verticalScale(200) }}>
+                                            <TouchableOpacity
+                                                style={[styles.dropdownItem, !assignedTo && { backgroundColor: colors.primary + '20' }]}
+                                                onPress={() => {
+                                                    setAssignedTo('');
+                                                    setIsUserDropdownOpen(false);
+                                                }}
+                                            >
+                                                <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>All Users</Text>
+                                            </TouchableOpacity>
+                                            {filteredUsers.map(user => (
+                                                <TouchableOpacity
+                                                    key={user._id}
+                                                    style={[styles.dropdownItem, assignedTo === user._id && { backgroundColor: colors.primary + '20' }]}
+                                                    onPress={() => {
+                                                        setAssignedTo(user._id);
+                                                        setIsUserDropdownOpen(false);
+                                                    }}
+                                                >
+                                                    <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>{user.name}</Text>
+                                                    <Text style={[styles.itemSubtitle, { color: colors.textSecondary }]}>{user.email}</Text>
+                                                </TouchableOpacity>
+                                            ))}
+                                            {filteredUsers.length === 0 && (
+                                                <View style={{ padding: 16, alignItems: 'center' }}>
+                                                    <Text style={{ color: colors.textSecondary }}>No users found</Text>
+                                                </View>
+                                            )}
+                                        </ScrollView>
+                                    </View>
+                                )}
+                            </>
                         )}
 
                         {/* Date Range */}

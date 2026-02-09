@@ -49,19 +49,47 @@ export const EmptyState = ({
 
 const styles = StyleSheet.create({
     container: {
-        flex: 1, // Take available space
+        flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
         paddingHorizontal: scale(32),
-        paddingTop: verticalScale(40), // Push it down a bit
+        minHeight: verticalScale(300), // Ensure minimum height for visibility
     },
     iconContainer: {
-        width: moderateScale(100),
-        height: moderateScale(100),
-        borderRadius: moderateScale(50),
+        width: moderateScale(120),
+        height: moderateScale(120),
+        borderRadius: moderateScale(60),
         alignItems: 'center',
         justifyContent: 'center',
         marginBottom: verticalScale(24),
+        shadowColor: "#000",
+        shadowOffset: {
+            width: 0,
+            height: verticalScale(8),
+        },
+        shadowOpacity: 0.15,
+        shadowRadius: moderateScale(12),
+        elevation: 6,
+    },
+    title: {
+        fontSize: moderateScale(22),
+        fontWeight: '800',
+        textAlign: 'center',
+        marginBottom: verticalScale(12),
+        letterSpacing: 0.5,
+    },
+    description: {
+        fontSize: moderateScale(15),
+        textAlign: 'center',
+        lineHeight: verticalScale(24),
+        marginBottom: verticalScale(32),
+        paddingHorizontal: scale(16),
+        opacity: 0.8,
+    },
+    button: {
+        paddingHorizontal: scale(32),
+        paddingVertical: verticalScale(14),
+        borderRadius: moderateScale(30),
         shadowColor: "#000",
         shadowOffset: {
             width: 0,
@@ -71,26 +99,10 @@ const styles = StyleSheet.create({
         shadowRadius: moderateScale(8),
         elevation: 4,
     },
-    title: {
-        fontSize: moderateScale(20),
-        fontWeight: '700',
-        textAlign: 'center',
-        marginBottom: verticalScale(8),
-    },
-    description: {
-        fontSize: moderateScale(14),
-        textAlign: 'center',
-        lineHeight: verticalScale(20),
-        marginBottom: verticalScale(24),
-    },
-    button: {
-        paddingHorizontal: scale(24),
-        paddingVertical: verticalScale(12),
-        borderRadius: moderateScale(24),
-    },
     buttonText: {
         color: '#FFF',
-        fontWeight: '600',
-        fontSize: moderateScale(14),
+        fontWeight: '700',
+        fontSize: moderateScale(16),
+        letterSpacing: 0.5,
     }
 });
