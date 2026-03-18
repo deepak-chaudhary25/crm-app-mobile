@@ -21,7 +21,7 @@ interface LeadProps {
     email?: string;
     onPressWhatsApp?: () => void;
     onPressCall?: () => void;
-    onPressSchedule?: () => void;
+    onPressLogCall?: () => void;
     source?: string;
     onPressDetail?: () => void;
 }
@@ -42,7 +42,7 @@ export const LeadCard = ({
     isSelected = false,
     onPressWhatsApp,
     onPressCall,
-    onPressSchedule,
+    onPressLogCall,
     onPressDetail,
     onToggleSelection
 }: LeadProps) => {
@@ -167,7 +167,7 @@ export const LeadCard = ({
             <View style={styles.actionRow} >
                 <ActionButton icon="call-outline" label="Call" onPress={handleCall} />
                 <ActionButton icon="logo-whatsapp" label="WhatsApp" onPress={onPressWhatsApp} />
-                <ActionButton icon="time-outline" label="Schedule" onPress={onPressSchedule} />
+                <ActionButton icon="document-text-outline" label="Log" onPress={onPressLogCall} />
             </View >
 
         </TouchableOpacity >

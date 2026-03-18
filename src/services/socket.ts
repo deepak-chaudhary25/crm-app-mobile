@@ -23,24 +23,27 @@ export const socketService = {
 
         console.log('🔌 [Socket] Connecting to:', SOCKET_URL);
 
+        // --- CHANGE 1: Updated Configuration ---
         socket = io(SOCKET_URL, {
             auth: {
                 token: token
             },
-            transports: ['websocket'],
+            // CHANGE 2: Added 'polling' before 'websocket'
+            // Ye zaroori hai kyunki production server (https) par direct websocket kabhi-kabhi block ho jata hai.
+            transports: ['polling', 'websocket'],
             autoConnect: true,
             reconnection: true,
-            reconnectionAttempts: 5,
+            reconnectionAttempts: Infinity,
             reconnectionDelay: 1000,
         });
 
         socket.on('connect', async () => {
             console.log('✅ [Socket] Connected:', socket?.id);
             const user = await authService.getUser();
-            if (user?.userId) {
-                console.log('👉 [Socket] Joining room for user:', user.userId);
-                socket?.emit('join', { userId: user.userId });
-            }
+            // if (user?.userId) {
+            //     console.log('👉 [Socket] Joining room for user:', user.userId);
+            //     socket?.emit('join', { userId: user.userId });
+            // }
         });
 
         socket.on('connect_error', (err) => {
@@ -61,7 +64,37 @@ export const socketService = {
 
             // 1. Show In-App Alert (if app is open)
             if (RNAlert) {
-                RNAlert.alert(title, body);
+                RNAlert.alert(
+                    title,
+                    body,
+                    [
+                        {
+                            text: 'Cancel',
+                            style: 'cancel'
+                        },
+                        {
+                            text: 'View Lead',
+                            onPress: () => {
+                                import('react-native').then(({ Linking }) => {
+                                    // Just open the deep link to the lead detail screen
+                                    openAppDeepLink(Linking, data);
+                                });
+
+                                // Helper to open the app via deep link
+                                const openAppDeepLink = (LinkingModule: any, payload: any) => {
+                                    if (payload.url) {
+                                        let url = payload.url;
+                                        if (url.includes('{leadId}')) {
+                                            url = url.replace('{leadId}', payload.leadId);
+                                        }
+                                        console.log('🔗 [Socket] Opening Deep Link from Reminder:', url);
+                                        LinkingModule.openURL(url).catch((err: any) => console.error('Error opening deep link from socket', err));
+                                    }
+                                };
+                            }
+                        }
+                    ]
+                );
             } else {
                 console.warn('⚠️ [Socket] Alert module not found');
             }

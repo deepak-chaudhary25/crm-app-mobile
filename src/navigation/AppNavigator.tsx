@@ -12,6 +12,7 @@ import { LeadScreen } from '../screens/LeadScreen';
 import { HistoryScreen } from '../screens/HistoryScreen';
 import { LeadHistoryScreen } from '../screens/LeadHistoryScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { FollowupScreen } from '../screens/FollowupScreen';
 
 
 import { useAppTheme } from '../theme';
@@ -55,8 +56,8 @@ const MainTabs = () => {
                         iconName = focused ? 'people' : 'people-outline';
                     } else if (route.name === 'History') {
                         iconName = focused ? 'time' : 'time-outline';
-                    } else if (route.name === 'Home') {
-                        iconName = focused ? 'grid' : 'grid-outline';
+                    } else if (route.name === 'Task') {
+                        iconName = focused ? 'calendar' : 'calendar-outline';
                     } else if (route.name === 'Settings') {
                         iconName = focused ? 'settings' : 'settings-outline';
                     }
@@ -65,8 +66,12 @@ const MainTabs = () => {
                 },
             })}
         >
-            <Tab.Screen name="Home" component={LeadScreen} />
             <Tab.Screen name="Leads" component={LeadScreen} />
+            <Tab.Screen 
+                name="Task" 
+                component={FollowupScreen} 
+                options={{ tabBarLabel: 'Task' }} 
+            />
             <Tab.Screen
                 name="History"
                 component={HistoryScreen}
@@ -78,8 +83,24 @@ const MainTabs = () => {
 };
 
 export const AppNavigator = () => {
+    const linking = {
+        prefixes: ['crmapp://'],
+        config: {
+            screens: {
+                MainTabs: {
+                    screens: {
+                        Leads: 'leads',
+                        History: 'history',
+                        Settings: 'settings',
+                    },
+                },
+                LeadDetail: 'lead/:leadId',
+            },
+        },
+    };
+
     return (
-        <NavigationContainer ref={navigationRef}>
+        <NavigationContainer ref={navigationRef} linking={linking}>
             <Stack.Navigator
                 initialRouteName="Splash"
                 screenOptions={{

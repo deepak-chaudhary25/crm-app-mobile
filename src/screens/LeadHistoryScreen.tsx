@@ -1,33 +1,39 @@
 
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Linking, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
-import { callLogsApi } from '../services/api';
+import { callLogsApi, interactionLogsApi } from '../services/api';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
-import { useCallHandling } from '../hooks/useCallHandling';
-import { CallFeedbackModal } from '../components/CallFeedbackModal';
+import { useCallHandlingContext } from '../context/CallHandlingContext';
 
 interface CallLog {
     _id: string;
     leadId: number;
-    userId: {
-        _id: string;
-        name: string;
-        email: string;
-    };
+    userId?: { _id: string; name: string; email: string };
     duration: number;
     outcome: string;
-    stageId?: {
-        _id: string;
-        name: string;
-    };
     remark?: string;
+    stageId?: { _id: string; name: string };
+    startedAt?: string;
     createdAt: string;
     leadName?: string;
     LeadNumber?: string;
+    leadNumber?: string;
+}
+
+interface InteractionLog {
+    _id: string;
+    leadId: number;
+    userId?: { _id: string; name: string; email: string };
+    source: string;
+    outcome: string;
+    stageId?: { _id: string; name: string };
+    interactionAt: string;
+    createdAt: string;
+    leadName?: string;
     leadNumber?: string;
 }
 
@@ -35,55 +41,73 @@ export const LeadHistoryScreen = () => {
     const { colors, isDark } = useAppTheme();
     const navigation = useNavigation();
     const route = useRoute<any>();
-    const { leadId, leadName, leadNumber } = route.params;
+    const { leadId, leadName, leadNumber, logType = 'calls' } = route.params;
 
-    const [history, setHistory] = useState<CallLog[]>([]);
+    const [callLogs, setCallLogs] = useState<CallLog[]>([]);
+    const [interactionLogs, setInteractionLogs] = useState<InteractionLog[]>([]);
     const [loading, setLoading] = useState(false);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [displayName, setDisplayName] = useState<string>(leadName || '');
+    const [displayPhone, setDisplayPhone] = useState<string>(leadNumber || '');
 
-    // Pass loadHistory as callback to refresh after feedback
-    const { handleCall: performCall, feedbackModalVisible, currentCallLog, blockingCall, handleSaveFeedback } = useCallHandling({
-        onFeedbackSuccess: () => loadHistory()
-    });
+    const { handleCall: performCall } = useCallHandlingContext();
 
-    // Helper: Find valid number from params or history items
     const getPhoneNumber = () => {
         if (leadNumber) return leadNumber;
-        if (history.length > 0) {
-            const item = history.find(h => h.LeadNumber || h.leadNumber);
-            return item?.LeadNumber || item?.leadNumber;
-        }
-        return null;
+        const fromCalls = callLogs.find(h => h.LeadNumber || h.leadNumber);
+        return fromCalls?.LeadNumber || fromCalls?.leadNumber;
     };
 
-
-
-    const handleCall = () => {
-        const number = getPhoneNumber();
-        if (!number) {
-            Alert.alert('Error', 'No phone number available');
-            return;
-        }
-        performCall(number, {
-            leadId: leadId,
-            name: leadName
-        });
+    const handleCall = (phoneNumber?: string) => {
+        const number = phoneNumber || displayPhone;
+        if (!number) { Alert.alert('Error', 'No phone number available'); return; }
+        performCall(number, { leadId, name: displayName });
     };
 
     const loadHistory = async () => {
         setLoading(true);
         try {
-            const data = await callLogsApi.getLeadLogs(leadId);
-            setHistory(data);
+            if (logType === 'interactions') {
+                const data = await interactionLogsApi.getByLeadId(leadId);
+                const list: InteractionLog[] = Array.isArray(data) ? data : data?.data || [];
+                setInteractionLogs(list);
+                if (list.length > 0) {
+                    setDisplayName(list[0].leadName || leadName || '');
+                    setDisplayPhone(list[0].leadNumber || leadNumber || '');
+                }
+            } else {
+                const data = await callLogsApi.getLeadLogs(leadId);
+                const list: CallLog[] = Array.isArray(data) ? data : data?.data || [];
+                setCallLogs(list);
+                if (list.length > 0) {
+                    setDisplayName(list[0].leadName || leadName || '');
+                    setDisplayPhone(list[0].leadNumber || list[0].LeadNumber || leadNumber || '');
+                }
+            }
         } catch (error) {
-            console.error('Failed to load history', error);
+            console.error('Failed to load lead log history', error);
         } finally {
             setLoading(false);
         }
     };
 
-    useEffect(() => {
-        loadHistory();
-    }, [leadId]);
+    useEffect(() => { loadHistory(); }, [leadId, logType]);
+
+    const toggleExpand = (id: string) => setExpandedId(prev => prev === id ? null : id);
+
+    const formatTime = (dateStr: string) => {
+        const date = new Date(dateStr);
+        let hours = date.getHours();
+        const minutes = date.getMinutes();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12;
+        return `${hours}:${minutes < 10 ? '0' + minutes : minutes} ${ampm}`;
+    };
+
+    const formatDate = (dateStr: string) => {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    };
 
     const formatDuration = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
@@ -91,72 +115,121 @@ export const LeadHistoryScreen = () => {
         return `${mins}m ${secs}s`;
     };
 
-    const formatTime = (date: Date) => {
-        let hours = date.getHours();
-        const minutes = date.getMinutes();
-        const ampm = hours >= 12 ? 'PM' : 'AM';
-        hours = hours % 12;
-        hours = hours ? hours : 12; // the hour '0' should be '12'
-        const strMinutes = minutes < 10 ? '0' + minutes : minutes;
-        return hours + ':' + strMinutes + ' ' + ampm;
-    };
-
-    const getIconForOutcome = (outcome: string, duration: number) => {
-        const lowerOutcome = (outcome || '').toLowerCase();
-        if (lowerOutcome.includes('missed') || lowerOutcome.includes('dint pick') || duration === 0) {
-            return { name: 'call', color: '#EF4444' };
-        }
-        return { name: 'call', color: '#10B981' };
-    };
-
-    const renderItem = ({ item }: { item: CallLog }) => {
-        const date = new Date(item.createdAt);
+    // ── Call Log Card ─────────────────────────────────────────────
+    const renderCallItem = ({ item }: { item: CallLog }) => {
+        const isExpanded = expandedId === item._id;
+        const missed = (item.outcome || '').toLowerCase().includes('missed') || item.duration === 0;
+        const iconColor = missed ? '#EF4444' : '#10B981';
 
         return (
-            <View style={[styles.card, { backgroundColor: colors.card, shadowColor: colors.textPrimary }]}>
-                {/* 1. Header: Stage Name | Date Time */}
-                <View style={[styles.headerRow, { marginBottom: 8, justifyContent: 'space-between' }]}>
-                    <View style={[styles.stageBadge, { backgroundColor: isDark ? '#374151' : '#F3F4F6', marginLeft: 0 }]}>
-                        <Text style={[styles.stageText, { color: colors.textPrimary }]}>
-                            {item.stageId?.name || 'Unknown Stage'}
+            <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => toggleExpand(item._id)}
+                style={[styles.card, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', shadowColor: isDark ? '#000' : '#64748B' }]}
+            >
+                <View style={styles.cardHeader}>
+                    <View style={[styles.iconContainer, { backgroundColor: `${iconColor}15` }]}>
+                        <Icon name="call" size={moderateScale(18)} color={iconColor} />
+                    </View>
+                    <View style={styles.headerContent}>
+                        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
+                            {item.outcome || 'Call'}
+                        </Text>
+                        <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
+                            {formatDate(item.createdAt)} • {formatTime(item.createdAt)}
                         </Text>
                     </View>
-                    <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
-                        {date.toLocaleDateString()} • {formatTime(date)}
-                    </Text>
-                </View>
-
-                {/* 2. Details: Duration | Caller (Moved outcome to own row) */}
-                <View style={styles.detailsRow}>
-                    <View style={styles.detailItem}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Duration</Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{formatDuration(item.duration)}</Text>
+                    <View style={[styles.badge, { backgroundColor: isDark ? '#334155' : '#F1F5F9' }]}>
+                        <Icon name="time-outline" size={moderateScale(12)} color={colors.textSecondary} />
+                        <Text style={[styles.badgeText, { color: colors.textSecondary }]}> {formatDuration(item.duration)}</Text>
                     </View>
-                    {/* Caller */}
-                    <View style={styles.detailItem}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Caller</Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.userId?.name || 'Unknown'}</Text>
+                    <Icon name={isExpanded ? 'chevron-up' : 'chevron-down'} size={moderateScale(20)} color={colors.textSecondary} />
+                </View>
+
+                {isExpanded && (
+                    <View style={[styles.expandedContent, { borderTopColor: isDark ? '#334155' : '#F1F5F9' }]}>
+                        <View style={styles.detailsRow}>
+                            <View style={styles.detailItem}>
+                                <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Stage</Text>
+                                <View style={[styles.stageBadge, { backgroundColor: isDark ? '#374151' : '#F1F5F9' }]}>
+                                    <Text style={[styles.stageText, { color: colors.textPrimary }]}>{item.stageId?.name || '—'}</Text>
+                                </View>
+                            </View>
+                            <View style={styles.detailItem}>
+                                <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Agent</Text>
+                                <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.userId?.name || '—'}</Text>
+                            </View>
+                        </View>
+                        {item.remark ? (
+                            <View style={{ marginTop: verticalScale(12) }}>
+                                <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Remark</Text>
+                                <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
+                                    <Icon name="chatbubble-ellipses-outline" size={moderateScale(14)} color={colors.textSecondary} />
+                                    <Text style={[styles.remarkText, { color: colors.textPrimary }]}> {item.remark}</Text>
+                                </View>
+                            </View>
+                        ) : null}
                     </View>
+                )}
+            </TouchableOpacity>
+        );
+    };
+
+    // ── Interaction Log Card ──────────────────────────────────────
+    const renderInteractionItem = ({ item }: { item: InteractionLog }) => {
+        const isExpanded = expandedId === item._id;
+
+        return (
+            <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => toggleExpand(item._id)}
+                style={[styles.card, { backgroundColor: isDark ? '#1E293B' : '#FFFFFF', shadowColor: isDark ? '#000' : '#64748B' }]}
+            >
+                <View style={styles.cardHeader}>
+                    <View style={[styles.iconContainer, { backgroundColor: '#8B5CF615' }]}>
+                        <Icon name="chatbubbles-outline" size={moderateScale(18)} color="#8B5CF6" />
+                    </View>
+                    <View style={styles.headerContent}>
+                        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
+                            {item.outcome || 'Interaction'}
+                        </Text>
+                        <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
+                            {formatDate(item.interactionAt)} • {formatTime(item.interactionAt)}
+                        </Text>
+                    </View>
+                    <View style={[styles.badge, { backgroundColor: '#8B5CF615' }]}>
+                        <Text style={[styles.badgeText, { color: '#8B5CF6' }]}>{item.source || '—'}</Text>
+                    </View>
+                    <Icon name={isExpanded ? 'chevron-up' : 'chevron-down'} size={moderateScale(20)} color={colors.textSecondary} />
                 </View>
 
-                {/* 3. Outcome (Full Width) */}
-                <View style={{ marginTop: 12 }}>
-                    <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Outcome</Text>
-                    <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.outcome}</Text>
-                </View>
-
-                {/* 4. Remark (Full Width) */}
-                {item.remark && (
-                    <View style={{ marginTop: 12 }}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Remark</Text>
-                        <View style={[styles.remarkBox, { backgroundColor: isDark ? '#374151' : '#F3F4F6', marginTop: 4 }]}>
-                            <Text style={[styles.remarkText, { color: colors.textPrimary }]}>{item.remark}</Text>
+                {isExpanded && (
+                    <View style={[styles.expandedContent, { borderTopColor: isDark ? '#334155' : '#F1F5F9' }]}>
+                        <View style={styles.detailsRow}>
+                            <View style={styles.detailItem}>
+                                <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Stage</Text>
+                                <View style={[styles.stageBadge, { backgroundColor: isDark ? '#374151' : '#F1F5F9' }]}>
+                                    <Text style={[styles.stageText, { color: colors.textPrimary }]}>{item.stageId?.name || '—'}</Text>
+                                </View>
+                            </View>
+                            <View style={styles.detailItem}>
+                                <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Agent</Text>
+                                <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.userId?.name || '—'}</Text>
+                            </View>
+                        </View>
+                        <View style={{ marginTop: verticalScale(8) }}>
+                            <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Source</Text>
+                            <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.source || '—'}</Text>
                         </View>
                     </View>
                 )}
-            </View>
+            </TouchableOpacity>
         );
     };
+
+    const isInteractions = logType === 'interactions';
+    const data = isInteractions ? interactionLogs : callLogs;
+    const isEmpty = data.length === 0 && !loading;
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -170,56 +243,54 @@ export const LeadHistoryScreen = () => {
                     </TouchableOpacity>
                     <View style={{ marginLeft: 12 }}>
                         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
-                            {leadName || 'Lead History'}
+                            {displayName || `Lead #${leadId}`}
                         </Text>
-                        {getPhoneNumber() && (
+                        {displayPhone ? (
                             <Text style={[styles.timestamp, { color: colors.textSecondary, marginTop: 2 }]}>
-                                {getPhoneNumber()}
+                                {displayPhone}
                             </Text>
-                        )}
+                        ) : null}
                     </View>
                 </View>
 
-                <TouchableOpacity
-                    style={[styles.callBtn, { backgroundColor: '#E0F2FE' }]}
-                    onPress={handleCall}
-                >
-                    <Icon name="call" size={moderateScale(20)} color="#0284C7" />
-                </TouchableOpacity>
+                {displayPhone && (
+                    <TouchableOpacity style={[styles.callBtn, { backgroundColor: '#E0F2FE' }]} onPress={() => handleCall()}>
+                        <Icon name="call" size={moderateScale(20)} color="#0284C7" />
+                    </TouchableOpacity>
+                )}
             </View>
 
-            {history.length === 0 && !loading ? (
+            {isEmpty ? (
                 <View style={styles.emptyContainer}>
-                    <Icon name="time-outline" size={moderateScale(64)} color={colors.textSecondary + '40'} />
-                    <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No history found for this lead.</Text>
+                    <Icon
+                        name={isInteractions ? 'chatbubbles-outline' : 'time-outline'}
+                        size={moderateScale(64)}
+                        color={colors.textSecondary + '40'}
+                    />
+                    <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
+                        No {isInteractions ? 'interactions' : 'call history'} found for this lead.
+                    </Text>
                 </View>
             ) : (
                 <FlatList
-                    data={history}
+                    data={data as any[]}
                     keyExtractor={(item) => item._id}
-                    renderItem={renderItem}
-                    contentContainerStyle={styles.listContent}
-                    refreshControl={
-                        <RefreshControl refreshing={loading} onRefresh={loadHistory} colors={[colors.primary]} />
+                    renderItem={isInteractions
+                        ? renderInteractionItem as any
+                        : renderCallItem as any
                     }
+                    contentContainerStyle={styles.listContent}
+                    showsVerticalScrollIndicator={false}
+                    refreshControl={<RefreshControl refreshing={loading} onRefresh={loadHistory} colors={[colors.primary]} />}
                 />
             )}
 
-            <CallFeedbackModal
-                visible={feedbackModalVisible}
-                callLog={currentCallLog}
-                leadName={blockingCall?.leadName || leadName}
-                currentStageId={blockingCall?.stageId}
-                onSave={handleSaveFeedback}
-            />
         </SafeAreaView>
     );
 };
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-    },
+    container: { flex: 1 },
     header: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -227,95 +298,64 @@ const styles = StyleSheet.create({
         paddingHorizontal: scale(16),
         paddingVertical: verticalScale(12),
     },
-    backBtn: {
-        padding: scale(4),
-    },
-    headerTitle: {
-        fontSize: moderateScale(18),
-        fontWeight: '700',
-    },
-    listContent: {
-        padding: scale(16),
-    },
+    backBtn: { padding: scale(4) },
+    headerTitle: { fontSize: moderateScale(18), fontWeight: '700' },
+    listContent: { padding: scale(16), paddingBottom: verticalScale(40) },
     card: {
         borderRadius: moderateScale(16),
-        padding: scale(16),
+        padding: scale(14),
         marginBottom: verticalScale(12),
         shadowOffset: { width: 0, height: verticalScale(2) },
         shadowOpacity: 0.05,
         shadowRadius: moderateScale(8),
-        elevation: 2,
+        elevation: 1.5,
     },
-    headerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: verticalScale(16),
-    },
-    iconBox: {
-        width: moderateScale(40),
-        height: moderateScale(40),
-        borderRadius: moderateScale(20),
+    cardHeader: { flexDirection: 'row', alignItems: 'center' },
+    iconContainer: {
+        width: moderateScale(36),
+        height: moderateScale(36),
+        borderRadius: moderateScale(18),
         alignItems: 'center',
         justifyContent: 'center',
         marginRight: scale(12),
     },
-    title: {
-        fontSize: moderateScale(16),
-        fontWeight: '700',
-    },
-    timestamp: {
-        fontSize: moderateScale(12),
-        marginTop: verticalScale(2),
-    },
-    stageBadge: {
-        paddingHorizontal: scale(10),
+    headerContent: { flex: 1 },
+    badge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: scale(8),
         paddingVertical: verticalScale(4),
         borderRadius: moderateScale(12),
+        marginRight: scale(8),
     },
-    stageText: {
-        fontSize: moderateScale(11),
-        fontWeight: '700',
-    },
-    detailsRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: verticalScale(4),
-    },
-    detailItem: {
-        flex: 1,
-    },
-    detailLabel: {
-        fontSize: moderateScale(11),
-        marginBottom: verticalScale(2),
-        textTransform: 'uppercase',
-        fontWeight: '700',
-    },
-    detailValue: {
-        fontSize: moderateScale(14),
-        fontWeight: '500',
-    },
-    remarkBox: {
-        padding: scale(12),
-        borderRadius: moderateScale(8),
+    badgeText: { fontSize: moderateScale(11), fontWeight: '600' },
+    expandedContent: {
         marginTop: verticalScale(12),
+        paddingTop: verticalScale(12),
+        borderTopWidth: StyleSheet.hairlineWidth,
     },
-    remarkText: {
-        fontSize: moderateScale(14),
-        fontStyle: 'italic',
+    title: { fontSize: moderateScale(15), fontWeight: '700' },
+    timestamp: { fontSize: moderateScale(12), fontWeight: '500', marginTop: verticalScale(2) },
+    stageBadge: {
+        alignSelf: 'flex-start',
+        paddingHorizontal: scale(10),
+        paddingVertical: verticalScale(4),
+        borderRadius: moderateScale(6),
     },
-    emptyContainer: {
-        flex: 1,
+    stageText: { fontSize: moderateScale(11), fontWeight: '700' },
+    detailsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: verticalScale(4) },
+    detailItem: { flex: 1 },
+    detailLabel: { fontSize: moderateScale(11), marginBottom: verticalScale(4), textTransform: 'uppercase', fontWeight: '700' },
+    detailValue: { fontSize: moderateScale(14), fontWeight: '600' },
+    remarkBubble: {
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: verticalScale(100),
+        padding: scale(10),
+        borderRadius: moderateScale(8),
+        marginTop: verticalScale(4),
     },
-    emptyText: {
-        marginTop: verticalScale(16),
-        fontSize: moderateScale(16),
-    },
-    callBtn: {
-        padding: scale(8),
-        borderRadius: moderateScale(20),
-        marginLeft: scale(8),
-    },
+    remarkText: { fontSize: moderateScale(13), fontWeight: '500', flex: 1 },
+    emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    emptyText: { marginTop: verticalScale(16), fontSize: moderateScale(16) },
+    callBtn: { padding: scale(8), borderRadius: moderateScale(20) },
 });

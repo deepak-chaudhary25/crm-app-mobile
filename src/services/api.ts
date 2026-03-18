@@ -130,6 +130,17 @@ export const leadsApi = {
             throw error.response?.data || { message: 'Failed to fetch leads' };
         }
     },
+    getLead: async (id: string | number) => {
+        try {
+            // Mongo IDs are 24 char hex strings, use /leads/:id. Otherwise (like 481), use /leads/lead/:id
+            const isMongoId = typeof id === 'string' && /^[a-f\d]{24}$/i.test(id);
+            const endpoint = isMongoId ? `/leads/${id}` : `/leads/lead/${id}`;
+            const response = await api.get(endpoint);
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to fetch lead details' };
+        }
+    },
     bulkAssign: async (leadIds: string[], assignedTo: string, reason: string) => {
         try {
             const payload = {
@@ -141,6 +152,23 @@ export const leadsApi = {
             return response.data;
         } catch (error: any) {
             throw error.response?.data || { message: 'Failed to assign leads' };
+        }
+    },
+    createLead: async (leadData: {
+        name: string;
+        phone: string;
+        email?: string;
+        source: string;
+        assignedTo?: string;
+        reason?: string;
+        stageId?: string;
+        source_campaign?: string;
+    }) => {
+        try {
+            const response = await api.post('/leads', leadData);
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to create lead' };
         }
     }
 };
@@ -184,7 +212,7 @@ export const callLogsApi = {
                 limit: 10,
                 ...params
             };
-            const response = await api.get('/call-logs', { params: queryParams });
+            const response = await api.get('/call-logs/users', { params: queryParams });
             return response.data;
         } catch (error: any) {
             throw error.response?.data || { message: 'Failed to fetch call logs' };
@@ -200,6 +228,38 @@ export const callLogsApi = {
     }
 };
 
+export const interactionLogsApi = {
+    createLog: async (data: { leadId: number; source: string; outcome: string; stageId: string }) => {
+        try {
+            const response = await api.post('/interaction-logs', data);
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to create interaction log' };
+        }
+    },
+    getLogs: async (params: any = {}) => {
+        try {
+            const queryParams = {
+                page: 1,
+                limit: 10,
+                ...params
+            };
+            const response = await api.get('/interaction-logs/users', { params: queryParams });
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to fetch interaction logs' };
+        }
+    },
+    getByLeadId: async (leadId: number | string) => {
+        try {
+            const response = await api.get(`/interaction-logs/lead/${leadId}`);
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to fetch interaction logs for lead' };
+        }
+    }
+};
+
 export const schedulesApi = {
     createSchedule: async (data: { leadId: number; scheduledAt: string }) => {
         try {
@@ -207,6 +267,25 @@ export const schedulesApi = {
             return response.data;
         } catch (error: any) {
             throw error.response?.data || { message: 'Failed to schedule lead' };
+        }
+    },
+    getSchedules: async (params: any = {}) => {
+        try {
+            const response = await api.get('/lead-schedules', { params });
+            return response.data;
+        } catch (error: any) {
+            throw error.response?.data || { message: 'Failed to fetch schedules' };
+        }
+    },
+    completeSchedule: async (scheduleId: string) => {
+        try {
+            console.log(`🚀 [API Request] PATCH /lead-schedules/${scheduleId}/complete`);
+            const response = await api.patch(`/lead-schedules/${scheduleId}/complete`);
+            console.log('✅ [API Response] /lead-schedules/:id/complete:', JSON.stringify(response.data, null, 2));
+            return response.data;
+        } catch (error: any) {
+            console.error('❌ [API Error] completeSchedule:', error.response?.data || error.message);
+            throw error.response?.data || { message: 'Failed to complete schedule' };
         }
     }
 };

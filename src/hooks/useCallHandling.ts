@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, AppStateStatus, Linking, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { historyService, Interaction } from '../services/history';
 import { callLogService, CallLogEntry } from '../services/callLog';
 import { authService } from '../services/auth';
@@ -35,9 +35,26 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
         }, [])
     );
 
+    const isFocused = useIsFocused();
+    const isFocusedRef = useRef(isFocused);
+
+    // Update ref when focus changes so the listener has access to current value
+    useEffect(() => {
+        isFocusedRef.current = isFocused;
+    }, [isFocused]);
+
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+        console.log('handleAppStateChange', { nextAppState, current: appState.current, isFocused: isFocusedRef.current });
+
+        // Only process if the app becomes active AND this screen is focused
         if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+            if (!isFocusedRef.current) {
+                console.log('App active but screen not focused. Ignoring call check.');
+                return;
+            }
+
             const trackingNumber = await AsyncStorage.getItem('active_call_number');
+            console.log('App active & focused. Tracking number:', trackingNumber);
             if (trackingNumber) {
                 await checkLastCall(trackingNumber);
             }
@@ -46,44 +63,64 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
     };
 
     const checkLastCall = async (targetNumber: string) => {
+        console.log('checkLastCall triggered for:', targetNumber);
         setTimeout(async () => {
             const log = await callLogService.getLastCall(targetNumber);
             await AsyncStorage.removeItem('active_call_number');
+            console.log('callLogService.getLastCall result:', log);
 
             if (log) {
                 // Check if we just processed this number recently (within last 10 seconds)
                 if (lastProcessedCall.current &&
                     lastProcessedCall.current.phoneNumber === log.phoneNumber &&
                     (Date.now() - lastProcessedCall.current.timestamp < 10000)) {
+                    console.log('Skipping checkLastCall, already processed recently', lastProcessedCall.current);
                     return;
                 }
 
+                // Race Condition Guard: If the user already submitted feedback (pending cleared), don't reopen
+                const pending = await historyService.getPendingFeedback();
+                if (!pending) {
+                    console.log('Skipping checkLastCall, pending feedback already cleared');
+                    return;
+                }
+
+                console.log('Setting currentCallLog and opening modal from checkLastCall');
                 setCurrentCallLog(log);
                 setFeedbackModalVisible(true);
+            } else {
+                console.log('No call log found for tracking number -> user likely just opened dialer. Clearing pending feedback silently.');
+                await historyService.clearPendingFeedback();
             }
         }, 1500);
     };
 
-
     const checkBlockingState = async () => {
+        console.log('checkBlockingState called');
         const pending = await historyService.getPendingFeedback();
+        console.log('Pending feedback:', pending);
+
         if (pending) {
             setBlockingCall(pending);
             const log = await callLogService.getLastCall(pending.phoneNumber);
+            console.log('Blocking call log found:', log);
+
             if (log) {
                 setCurrentCallLog(log);
                 setFeedbackModalVisible(true);
             } else {
-                // Fallback
-                setCurrentCallLog({
-                    phoneNumber: pending.phoneNumber,
-                    callType: 'UNKNOWN',
-                    duration: 0,
-                    timestamp: pending.timestamp,
-                    dateTime: new Date(pending.timestamp).toISOString()
-                });
-                setFeedbackModalVisible(true);
+                // The user was blocked on a pending feedback status, but we couldn't
+                // find an actual native call log (meaning they just opened the dialer
+                // and backed out). Clear the pending feedback silently.
+                console.log('No call log found for blocking call -> user backed out of dialer. Clearing silently.');
+                await historyService.clearPendingFeedback();
+                setBlockingCall(null);
             }
+        } else {
+            console.log('No pending feedback found');
+            // Ensure modal is closed if no pending feedback? 
+            // We should be careful not to close it if it was opened by checkLastCall? 
+            // actually checkBlockingState is usually called on mount/focus.
         }
     };
 
@@ -144,7 +181,12 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
     };
 
     const handleSaveFeedback = async (outcome: string, remarks: string, selectedStageId?: string) => {
-        if (!blockingCall || !currentCallLog) return;
+        console.log('handleSaveFeedback called', { outcome, remarks, selectedStageId, blockingCallState: !!blockingCall, currentCallLogState: !!currentCallLog });
+
+        if (!blockingCall || !currentCallLog) {
+            console.error('Missing blockingCall or currentCallLog');
+            return;
+        }
 
         setLoading(true);
         try {
@@ -154,23 +196,35 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
 
             if (userId && blockingCall.leadIdNumeric) {
                 let startedAtIso = new Date().toISOString();
-                if (currentCallLog.dateTime) {
-                    startedAtIso = currentCallLog.dateTime;
-                } else if (currentCallLog.timestamp) {
+                if (currentCallLog.timestamp) {
                     startedAtIso = new Date(Number(currentCallLog.timestamp)).toISOString();
+                } else if (currentCallLog.dateTime) {
+                    try {
+                        startedAtIso = new Date(currentCallLog.dateTime).toISOString();
+                    } catch (e) {
+                        console.warn('Failed to parse dateTime', currentCallLog.dateTime);
+                    }
                 }
 
-                await callLogsApi.createLog({
+                const payload = {
                     leadId: blockingCall.leadIdNumeric,
-                    userId: userId,
+                    userId,
                     duration: currentCallLog.duration,
-                    outcome: outcome,
+                    outcome,
                     stageId: finalStageId,
                     remark: remarks,
                     startedAt: startedAtIso
-                });
+                };
+
+                console.log('🚀 [Call Log Payload]', JSON.stringify(payload, null, 2));
+
+                const response = await callLogsApi.createLog(payload);
+
+                console.log('Call log created successfully. Response:', JSON.stringify(response, null, 2));
 
                 Alert.alert('Success', 'Call log created successfully.');
+            } else {
+                console.warn('Skipping createLog: Missing userId or leadIdNumeric', { userId, leadIdNumeric: blockingCall.leadIdNumeric });
             }
 
             const interaction: Interaction = {
@@ -197,14 +251,18 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
             // Also ensure active_call_number is cleared
             await AsyncStorage.removeItem('active_call_number');
 
+            console.log('Closing modal and clearing blocking call');
             setBlockingCall(null);
+            setCurrentCallLog(null); // Clear log as well
             setFeedbackModalVisible(false);
 
             if (onFeedbackSuccess) {
+                console.log('Calling onFeedbackSuccess');
                 onFeedbackSuccess();
             }
 
         } catch (error: any) {
+            console.error('Error in handleSaveFeedback:', error);
             Alert.alert('Error', error.message || 'Failed to submit call log');
         } finally {
             setLoading(false);

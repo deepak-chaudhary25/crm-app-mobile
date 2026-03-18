@@ -77,8 +77,8 @@ export const historyService = {
 
     // --- Blocking Logic ---
 
-    setPendingFeedback: async (leadId: string, leadName: string, phoneNumber: string, leadIdNumeric: number, stageId: string) => {
-        const payload = { leadId, leadName, phoneNumber, leadIdNumeric, stageId, timestamp: Date.now() };
+    setPendingFeedback: async (leadId: string, leadName: string, phoneNumber: string, leadIdNumeric: number, stageId: string, scheduleId?: string) => {
+        const payload = { leadId, leadName, phoneNumber, leadIdNumeric, stageId, scheduleId, timestamp: Date.now() };
         await AsyncStorage.setItem(BLOCKING_KEY, JSON.stringify(payload));
     },
 

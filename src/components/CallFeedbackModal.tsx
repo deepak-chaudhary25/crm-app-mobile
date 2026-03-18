@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Modal, View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import DatePicker from 'react-native-date-picker';
 import { useAppTheme } from '../theme';
 import { Icon } from './Icon';
 import { CallLogEntry } from '../services/callLog';
@@ -11,7 +12,7 @@ interface CallFeedbackModalProps {
     callLog: CallLogEntry | null;
     leadName: string;
     currentStageId?: string;
-    onSave: (outcome: string, remarks: string, stageId?: string) => void;
+    onSave: (outcome: string, remarks: string, stageId?: string, scheduleDate?: Date) => Promise<void> | void;
     // Note: No onClose because it's mandatory (or handled by parent logic to be blocking)
 }
 
@@ -20,6 +21,11 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
     const [outcome, setOutcome] = useState('');
     const [remarks, setRemarks] = useState('');
     const [statsStageId, setStatsStageId] = useState<string | undefined>(currentStageId);
+    const [isSaving, setIsSaving] = useState(false);
+
+    // Scheduling
+    const [scheduleDate, setScheduleDate] = useState<Date | null>(null);
+    const [pickerOpen, setPickerOpen] = useState(false);
 
     // Stages
     const [stages, setStages] = useState<Stage[]>([]);
@@ -32,6 +38,7 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
             setStatsStageId(currentStageId); // Reset to current on open
             setOutcome('');
             setRemarks('');
+            setScheduleDate(null);
         }
     }, [visible, currentStageId]);
 
@@ -47,7 +54,10 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
         }
     };
 
-    const handleSave = () => {
+    const selectedStage = stages.find(s => s._id === statsStageId);
+    const isJunkOrLost = selectedStage?.name?.toLowerCase().includes('junk') || selectedStage?.name?.toLowerCase().includes('lost');
+
+    const handleSave = async () => {
         if (!outcome.trim()) {
             Alert.alert('Required', 'Please enter a call outcome.');
             return;
@@ -56,20 +66,37 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
             Alert.alert('Required', 'Please enter a remark to continue.');
             return;
         }
-        onSave(outcome, remarks, statsStageId);
-        setOutcome('');
-        setRemarks(''); // Reset for next time
+        if (!isJunkOrLost && !scheduleDate) {
+            Alert.alert('Required', 'Please schedule a follow-up date/time.');
+            return;
+        }
+
+        setIsSaving(true);
+        try {
+            await onSave(outcome, remarks, statsStageId, isJunkOrLost ? undefined : (scheduleDate || undefined));
+            // Only reset after successful save
+            setOutcome('');
+            setRemarks('');
+            setScheduleDate(null);
+        } catch (e) {
+            console.error('Save failed', e);
+        } finally {
+            setIsSaving(false);
+        }
     };
 
-    if (!visible || !callLog) return null;
+    // Keep the last known call log for smooth exit animations
+    const prevCallLog = React.useRef(callLog);
+    if (callLog) prevCallLog.current = callLog;
+    const displayCallLog = callLog || prevCallLog.current;
+
+    if (!displayCallLog) return null;
 
     const formatDuration = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
         return `${mins}m ${secs}s`;
     };
-
-    const selectedStage = stages.find(s => s._id === statsStageId);
 
     return (
         <Modal
@@ -102,13 +129,13 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                                 Lead: <Text style={{ fontWeight: '700' }}>{leadName}</Text>
                             </Text>
                             <Text style={[styles.detailText, { color: colors.textPrimary }]}>
-                                Duration: <Text style={{ fontWeight: '700' }}>{formatDuration(callLog.duration)}</Text>
+                                Duration: <Text style={{ fontWeight: '700' }}>{formatDuration(displayCallLog.duration)}</Text>
                             </Text>
                             <Text style={[styles.detailText, { color: colors.textPrimary }]}>
-                                Status: <Text style={{ fontWeight: '700', color: callLog.callType === 'MISSED' ? '#EF4444' : '#10B981' }}>{callLog.callType}</Text>
+                                Status: <Text style={{ fontWeight: '700', color: displayCallLog.callType === 'MISSED' ? '#EF4444' : '#10B981' }}>{displayCallLog.callType}</Text>
                             </Text>
                             <Text style={[styles.detailText, { color: colors.textSecondary, fontSize: 12, marginTop: 4 }]}>
-                                {new Date(callLog.timestamp).toLocaleString()}
+                                {new Date(displayCallLog.timestamp).toLocaleString()}
                             </Text>
                         </View>
 
@@ -146,6 +173,42 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                             )}
                         </View>
 
+                        {/* Follow-up Schedule (Hidden if Junk or Lost) */}
+                        {!isJunkOrLost && (
+                            <View style={{ marginBottom: 16 }}>
+                                <Text style={[styles.label, { color: colors.textSecondary }]}>Schedule Follow-up (Required)</Text>
+                                <TouchableOpacity
+                                    style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.background, marginBottom: 0 }]}
+                                    onPress={() => setPickerOpen(true)}
+                                >
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <View style={{ marginRight: 8 }}>
+                                            <Icon name="calendar-outline" size={18} color={scheduleDate ? colors.primary : colors.textSecondary} />
+                                        </View>
+                                        <Text style={{ color: scheduleDate ? colors.textPrimary : colors.textSecondary, fontSize: 14 }}>
+                                            {scheduleDate ? scheduleDate.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Select Date & Time...'}
+                                        </Text>
+                                    </View>
+                                    <Icon name="chevron-down" size={20} color={colors.textSecondary} />
+                                </TouchableOpacity>
+
+                                <DatePicker
+                                    modal
+                                    open={pickerOpen}
+                                    date={scheduleDate || new Date()}
+                                    onConfirm={(date) => {
+                                        setPickerOpen(false);
+                                        setScheduleDate(date);
+                                    }}
+                                    onCancel={() => {
+                                        setPickerOpen(false);
+                                    }}
+                                    minimumDate={new Date()}
+                                    theme={isDark ? 'dark' : 'light'}
+                                />
+                            </View>
+                        )}
+
                         {/* Outcome Input */}
                         <Text style={[styles.label, { color: colors.textSecondary }]}>Outcome (Required)</Text>
                         <TextInput
@@ -179,10 +242,11 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
 
                         {/* Save Button */}
                         <TouchableOpacity
-                            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
+                            style={[styles.saveBtn, { backgroundColor: isSaving ? colors.border : colors.primary }]}
                             onPress={handleSave}
+                            disabled={isSaving}
                         >
-                            <Text style={styles.saveBtnText}>Save & Verify</Text>
+                            <Text style={styles.saveBtnText}>{isSaving ? 'Saving...' : 'Save & Verify'}</Text>
                         </TouchableOpacity>
 
                         <Text style={[styles.helperText, { color: colors.textSecondary }]}>

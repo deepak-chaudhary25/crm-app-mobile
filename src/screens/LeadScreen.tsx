@@ -13,10 +13,11 @@ import { Loader } from '../components/Loader';
 import { EmptyState } from '../components/EmptyState';
 import { ScheduleModal } from '../components/ScheduleModal';
 import { Button } from '../components/Button';
-import { CallFeedbackModal } from '../components/CallFeedbackModal';
-import { useCallHandling } from '../hooks/useCallHandling';
-import { leadsApi, callLogsApi, stagesApi, usersApi, schedulesApi } from '../services/api';
+import { useCallHandlingContext } from '../context/CallHandlingContext';
+import { ManualCallLogModal } from '../components/ManualCallLogModal';
+import { leadsApi, callLogsApi, stagesApi, usersApi, schedulesApi, interactionLogsApi } from '../services/api';
 import { AssignLeadsModal } from '../components/AssignLeadsModal';
+import { AddLeadModal } from '../components/AddLeadModal';
 import { authService } from '../services/auth';
 import { callLogService, CallLogEntry } from '../services/callLog';
 import { historyService, Interaction } from '../services/history';
@@ -46,6 +47,10 @@ export const LeadScreen = () => {
     const [filters, setFilters] = useState<any>({});
     const [users, setUsers] = useState<any[]>([]);
 
+    // Manual Call Log State
+    const [manualLogModalVisible, setManualLogModalVisible] = useState(false);
+    const [activeManualLogLead, setActiveManualLogLead] = useState<any>(null);
+
     // API State
     const [leads, setLeads] = useState<Lead[]>([]);
     const [loading, setLoading] = useState(true);
@@ -56,9 +61,7 @@ export const LeadScreen = () => {
 
 
     // Call Tracking State - Replaced by Hook
-    const { handleCall: performCall, feedbackModalVisible, currentCallLog, blockingCall, handleSaveFeedback } = useCallHandling({
-        onFeedbackSuccess: () => fetchLeads(1, true)
-    });
+    const { handleCall: performCall } = useCallHandlingContext();
 
 
 
@@ -71,6 +74,10 @@ export const LeadScreen = () => {
     const [isSelectionMode, setIsSelectionMode] = useState(false);
     const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
     const [assignModalVisible, setAssignModalVisible] = useState(false);
+
+    // Create Lead State
+    const [canCreateLead, setCanCreateLead] = useState(false);
+    const [addModalVisible, setAddModalVisible] = useState(false);
 
     useEffect(() => {
         fetchStages();
@@ -116,8 +123,11 @@ export const LeadScreen = () => {
     }, [searchQuery, activeStageId]); // filters dependency added manually in handleApply
 
     const checkPermissions = async () => {
-        const hasPermission = await authService.hasPermission('leads', 'assign');
-        setCanAssign(hasPermission);
+        const hasAssignPermission = await authService.hasPermission('leads', 'assign');
+        setCanAssign(hasAssignPermission);
+
+        const hasCreatePermission = await authService.hasPermission('leads', 'create');
+        setCanCreateLead(hasCreatePermission);
     };
 
     const [canViewUsers, setCanViewUsers] = useState(false); // Added state
@@ -131,7 +141,7 @@ export const LeadScreen = () => {
         if (hasPermission) {
             try {
                 const data = await usersApi.getUsers();
-                setUsers(data);
+                setUsers(Array.isArray(data) ? data : (data?.data || []));
             } catch (error) {
                 console.error('Failed to fetch users', error);
             }
@@ -166,6 +176,18 @@ export const LeadScreen = () => {
         } catch (error: any) {
             console.error('Assignment failed:', error);
             Alert.alert('Error', error.message || 'Failed to assign leads');
+        }
+    };
+
+    const handleAddLead = async (leadData: any) => {
+        try {
+            await leadsApi.createLead(leadData);
+            Alert.alert('Success', 'Lead created successfully!');
+            setAddModalVisible(false);
+            fetchLeads(1, true); // Refresh list
+        } catch (error: any) {
+            console.error('Create Lead Failed:', error);
+            Alert.alert('Error', error.message || 'Failed to create lead');
         }
     };
 
@@ -379,6 +401,43 @@ export const LeadScreen = () => {
         }
     };
 
+    const handleManualLogSave = async (source: string, outcome: string, stageId?: string, scheduleDate?: Date) => {
+        if (!activeManualLogLead) return;
+
+        try {
+            setLoading(true);
+
+            // 1. Create the Interaction Log manually
+            await interactionLogsApi.createLog({
+                leadId: activeManualLogLead.leadId,
+                source,
+                outcome,
+                stageId: stageId || activeManualLogLead.stageId?._id || '',
+            });
+
+            // 2. Schedule Follow-up if selected
+            if (scheduleDate) {
+                await schedulesApi.createSchedule({
+                    leadId: activeManualLogLead.leadId,
+                    scheduledAt: scheduleDate.toISOString(),
+                });
+            }
+
+            // 3. Update the lead list
+            setManualLogModalVisible(false);
+            setActiveManualLogLead(null);
+            fetchLeads(1, true);
+
+            Alert.alert('Success', 'Interaction logged successfully.');
+
+        } catch (error: any) {
+            console.error('Failed to manually log interaction:', error);
+            Alert.alert('Error', error.message || 'Failed to save log.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleDetail = (lead: any) => {
         const flatLead = {
             id: lead._id,
@@ -416,9 +475,11 @@ export const LeadScreen = () => {
                                 )}
                             </View>
                         </TouchableOpacity>
-                        <TouchableOpacity style={styles.iconBtn} onPress={handleRefresh}>
-                            <Icon name="refresh" size={moderateScale(24)} color={colors.primary} />
-                        </TouchableOpacity>
+                        {canCreateLead && (
+                            <TouchableOpacity style={styles.iconBtn} onPress={() => setAddModalVisible(true)}>
+                                <Icon name="add" size={moderateScale(28)} color={colors.primary} />
+                            </TouchableOpacity>
+                        )}
                     </View>
                 </View>
             ) : (
@@ -544,7 +605,10 @@ export const LeadScreen = () => {
                                 onToggleSelection={() => toggleSelection(item._id)}
                                 onPressWhatsApp={() => handleWhatsApp(item.phone, item)}
                                 onPressCall={() => handleCall(item.phone, item)}
-                                onPressSchedule={() => handleOpenSchedule(item)}
+                                onPressLogCall={() => {
+                                    setActiveManualLogLead(item);
+                                    setManualLogModalVisible(true);
+                                }}
                                 onPressDetail={() => handleDetail(item)}
                                 source={item.source}
                             />
@@ -618,12 +682,24 @@ export const LeadScreen = () => {
                 leadName={selectedLead?.name}
             />
 
-            <CallFeedbackModal
-                visible={feedbackModalVisible}
-                callLog={currentCallLog}
-                leadName={blockingCall?.leadName || 'Unknown Lead'}
-                currentStageId={blockingCall?.stageId}
-                onSave={handleSaveFeedback}
+            <ManualCallLogModal
+                visible={manualLogModalVisible}
+                leadName={activeManualLogLead?.name || 'Unknown Lead'}
+                currentStageId={activeManualLogLead?.stageId?._id}
+                onClose={() => {
+                    setManualLogModalVisible(false);
+                    setActiveManualLogLead(null);
+                }}
+                onSave={handleManualLogSave}
+            />
+
+
+            <AddLeadModal
+                visible={addModalVisible}
+                onClose={() => setAddModalVisible(false)}
+                onAdd={handleAddLead}
+                canAssign={canAssign}
+                stages={stages}
             />
 
             <FilterModal
@@ -651,7 +727,6 @@ const styles = StyleSheet.create({
     },
     header: {
         paddingHorizontal: scale(16),
-        paddingTop: verticalScale(16),
         paddingBottom: 0,
     },
     headerRow: {

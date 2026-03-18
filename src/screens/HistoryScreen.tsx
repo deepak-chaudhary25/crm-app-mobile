@@ -1,14 +1,17 @@
 
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Linking, Alert } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Linking, Alert, TouchableWithoutFeedback, ScrollView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
-import { callLogsApi } from '../services/api';
+import { callLogsApi, interactionLogsApi } from '../services/api';
+import DatePicker from 'react-native-date-picker';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
-import { useCallHandling } from '../hooks/useCallHandling';
-import { CallFeedbackModal } from '../components/CallFeedbackModal';
+import { HistoryFilterModal } from '../components/HistoryFilterModal';
+import { authService } from '../services/auth';
+import { useCallHandlingContext } from '../context/CallHandlingContext';
+import { EmptyState } from '../components/EmptyState';
 
 interface CallLog {
     _id: string;
@@ -29,24 +32,80 @@ interface CallLog {
     leadName?: string;
     LeadNumber?: string;
     leadNumber?: string; // Add lowercase variant
+    
+    // Interaction Log Specific Fields
+    source?: string;
 }
 
 export const HistoryScreen = () => {
     const { colors, isDark } = useAppTheme();
-    const [history, setHistory] = useState<CallLog[]>([]);
+    const [activeTab, setActiveTab] = useState<'calls' | 'interactions'>('calls');
+    const [history, setHistory] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
+    const [users, setUsers] = useState<any[]>([]);
+
+    // Filters
+    const [answeredFilter, setAnsweredFilter] = useState<'all' | 'yes' | 'no'>('all');
+    const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month' | 'year' | 'custom'>('all');
+    const [isAnsweredDropdownOpen, setIsAnsweredDropdownOpen] = useState(false);
+    const [isDateDropdownOpen, setIsDateDropdownOpen] = useState(false);
+
+    // Group / Team Filter State
+    const [canViewGroup, setCanViewGroup] = useState(false);
+    const [isGroupFilterModalVisible, setIsGroupFilterModalVisible] = useState(false);
+    const [groupFilters, setGroupFilters] = useState<{ group: boolean; userId: string }>({ group: false, userId: '' });
+
+    // Custom Dates
+    const [fromDate, setFromDate] = useState<Date>(new Date());
+    const [toDate, setToDate] = useState<Date>(new Date());
+    const [showFromPicker, setShowFromPicker] = useState(false);
+    const [showToPicker, setShowToPicker] = useState(false);
+    const [showCustomDateModal, setShowCustomDateModal] = useState(false);
 
     // Pass loadHistory as callback to refresh after feedback
-    const { handleCall: performCall, feedbackModalVisible, currentCallLog, blockingCall, handleSaveFeedback } = useCallHandling({
-        onFeedbackSuccess: () => loadHistory()
-    });
+    const { handleCall: performCall } = useCallHandlingContext();
 
-    const loadHistory = async () => {
-        setLoading(true);
+    const loadHistory = async (isRefresh = false) => {
+        if (!isRefresh) setLoading(true);
         try {
-            const response = await callLogsApi.getLogs({ limit: 50 }); // Fetch first 50 for now
+            const params: any = { limit: 50 }; // Fetch first 50 for now
+            
+            // Apply answered filter
+            if (answeredFilter === 'yes') params.answered = true;
+            if (answeredFilter === 'no') params.answered = false;
+
+            // Apply date filters
+            if (dateFilter && dateFilter !== 'all') {
+                if (dateFilter === 'custom') {
+                    // Send date-only strings (YYYY-MM-DD) for custom range
+                    const toDateStr = (d: Date) => d.toISOString().split('T')[0];
+                    params.fromDate = toDateStr(new Date(fromDate));
+                    params.toDate = toDateStr(new Date(toDate));
+                } else {
+                    // Pass preset filter string directly to backend
+                    params.dateFilter = dateFilter; // today | week | month | year
+                }
+            }
+
+            let response;
+            if (activeTab === 'calls') {
+                console.log('[History] Payload (Call Logs):', params);
+                response = await callLogsApi.getLogs(params);
+            } else {
+                console.log('[History] Payload (Interaction Logs):', params);
+                response = await interactionLogsApi.getLogs(params);
+            }
+            console.log('[History] API Response:', response);
+
+            // When filtering by 'answered' on interactions (which don't have this field natively), 
+            // the API handles it, but typically it applies strictly to call-logs.
+            
             if (response && response.data) {
                 setHistory(response.data);
+            } else if (Array.isArray(response)) {
+                setHistory(response);
+            } else {
+                setHistory([]);
             }
         } catch (error) {
             console.error('Failed to load history', error);
@@ -55,10 +114,26 @@ export const HistoryScreen = () => {
         }
     };
 
+    // Check user:read permission on mount
+    useEffect(() => {
+        const checkPermission = async () => {
+            const hasGroupPermission = await authService.hasPermission('user', 'read');
+            setCanViewGroup(hasGroupPermission);
+        };
+        checkPermission();
+    }, []);
+
+    // Re-fetch whenever filters or tab changes
+    useEffect(() => {
+        loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, answeredFilter, dateFilter, fromDate, toDate, groupFilters]);
+
     useFocusEffect(
         useCallback(() => {
             loadHistory();
-        }, [])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [activeTab])  // Reload when tab changes focus
     );
 
     const formatDuration = (seconds: number) => {
@@ -71,7 +146,7 @@ export const HistoryScreen = () => {
     // Since API doesn't give explicit 'type' like 'CALL' or 'WHATSAPP' anymore (it sends only call logs),
     // we assume everything here is a Call.
     const getIconForOutcome = (outcome: string, duration: number) => {
-        const lowerOutcome = outcome.toLowerCase();
+        const lowerOutcome = (outcome || '').toLowerCase();
         if (lowerOutcome.includes('missed') || lowerOutcome.includes('dint pick') || duration === 0) {
             return { name: 'call', color: '#EF4444' }; // Red for missed/no-pickup
         }
@@ -82,10 +157,172 @@ export const HistoryScreen = () => {
 
     // ...
 
+    const renderTabs = () => (
+        <View style={styles.tabsContainer}>
+            <TouchableOpacity
+                style={[
+                    styles.tab,
+                    activeTab === 'calls' && [styles.activeTab, { backgroundColor: colors.primary }]
+                ]}
+                onPress={() => setActiveTab('calls')}
+            >
+                <Icon 
+                    name="call" 
+                    size={20} 
+                    color={activeTab === 'calls' ? '#FFF' : colors.textSecondary} 
+                />
+                <Text style={[
+                    styles.tabText,
+                    activeTab === 'calls' ? { color: '#FFF' } : { color: colors.textSecondary }
+                ]}>
+                    Call Logs
+                </Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+                style={[
+                    styles.tab,
+                    activeTab === 'interactions' && [styles.activeTab, { backgroundColor: colors.primary }]
+                ]}
+                onPress={() => setActiveTab('interactions')}
+            >
+                <Icon 
+                    name="chatbubbles" 
+                    size={20} 
+                    color={activeTab === 'interactions' ? '#FFF' : colors.textSecondary} 
+                />
+                <Text style={[
+                    styles.tabText,
+                    activeTab === 'interactions' ? { color: '#FFF' } : { color: colors.textSecondary }
+                ]}>
+                    Interactions
+                </Text>
+            </TouchableOpacity>
+        </View>
+    );
+
+    const renderFilters = () => {
+        const dateFilters = [
+            { id: 'all', label: 'All' },
+            { id: 'today', label: 'Today' },
+            { id: 'week', label: 'This Week' },
+            { id: 'month', label: 'This Month' },
+            { id: 'year', label: 'This Year' },
+            { id: 'custom', label: 'Custom' }
+        ];
+
+        return (
+            <TouchableWithoutFeedback onPress={() => {
+                setIsAnsweredDropdownOpen(false);
+                setIsDateDropdownOpen(false);
+            }}>
+                <View style={styles.filtersContainer}>
+                    {/* Answered Filter Dropdown */}
+                <View style={styles.filterGroup}>
+                    <Text style={[styles.filterGroupLabel, { color: colors.textSecondary }]}>Answered</Text>
+                    <TouchableOpacity
+                        style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                        onPress={() => {
+                            setIsAnsweredDropdownOpen(!isAnsweredDropdownOpen);
+                            setIsDateDropdownOpen(false);
+                        }}
+                    >
+                        <Text style={[styles.dropdownText, { color: colors.textPrimary, textTransform: 'capitalize' }]}>
+                            {answeredFilter}
+                        </Text>
+                        <Icon name={isAnsweredDropdownOpen ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+
+                    {isAnsweredDropdownOpen && (
+                        <View style={[styles.dropdownList, { borderColor: colors.border, backgroundColor: colors.card }]}>
+                            {['all', 'yes', 'no'].map(status => (
+                                <TouchableOpacity
+                                    key={status}
+                                    style={[styles.dropdownItem, answeredFilter === status && { backgroundColor: colors.primary + '20' }]}
+                                    onPress={() => {
+                                        setAnsweredFilter(status as any);
+                                        setIsAnsweredDropdownOpen(false);
+                                    }}
+                                >
+                                    <Text style={[styles.itemTitle, { color: colors.textPrimary, textTransform: 'capitalize' }]}>{status}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    )}
+                </View>
+
+                {/* Date Filter Dropdown */}
+                <View style={[styles.filterGroup, { zIndex: isAnsweredDropdownOpen ? 1 : 10 }]}>
+                    <Text style={[styles.filterGroupLabel, { color: colors.textSecondary }]}>Date Range</Text>
+                    <TouchableOpacity
+                        style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                        onPress={() => {
+                            setIsDateDropdownOpen(!isDateDropdownOpen);
+                            setIsAnsweredDropdownOpen(false);
+                        }}
+                    >
+                        <Text style={[styles.dropdownText, { color: colors.textPrimary }]} numberOfLines={1} ellipsizeMode="tail">
+                            {dateFilters.find(f => f.id === dateFilter)?.label || 'All'}
+                        </Text>
+                        <Icon name={isDateDropdownOpen ? "chevron-up" : "chevron-down"} size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+
+                    {isDateDropdownOpen && (
+                        <View style={[styles.dropdownList, { borderColor: colors.border, backgroundColor: colors.card }]}>
+                            {dateFilters.map(item => (
+                                <TouchableOpacity
+                                    key={item.id}
+                                    style={[styles.dropdownItem, dateFilter === item.id && { backgroundColor: colors.primary + '20' }]}
+                                    onPress={() => {
+                                        setIsDateDropdownOpen(false);
+                                        if (item.id === 'custom') {
+                                            setShowCustomDateModal(true);
+                                        } else {
+                                            setDateFilter(item.id as any);
+                                        }
+                                    }}
+                                >
+                                    <Text style={[styles.itemTitle, { color: colors.textPrimary }]}>{item.label}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    )}
+                </View>
+
+                {/* Group Filter Icon (only for users with user:read) */}
+                {canViewGroup && (
+                    <View style={styles.filterGroupIcon}>
+                        <TouchableOpacity
+                            style={[
+                                styles.dropdownTrigger,
+                                {
+                                    borderColor: (groupFilters.group || groupFilters.userId) ? colors.primary : colors.border,
+                                    backgroundColor: (groupFilters.group || groupFilters.userId) ? colors.primary + '15' : colors.inputBackground,
+                                    justifyContent: 'center',
+                                    paddingHorizontal: scale(12),
+                                }
+                            ]}
+                            onPress={() => setIsGroupFilterModalVisible(true)}
+                        >
+                            <Icon
+                                name="filter"
+                                size={moderateScale(18)}
+                                color={(groupFilters.group || groupFilters.userId) ? colors.primary : colors.textSecondary}
+                            />
+                        </TouchableOpacity>
+                    </View>
+                )}
+            </View>
+            </TouchableWithoutFeedback>
+        );
+    };
+
     const handlePressItem = (item: CallLog) => {
         navigation.navigate('LeadHistory', {
             leadId: item.leadId,
-            leadName: item.leadName || `Lead #${item.leadId}`
+            leadName: item.leadName || `Lead #${item.leadId}`,
+            leadNumber: item.leadNumber || item.LeadNumber,
+            logType: activeTab === 'interactions' ? 'interactions' : 'calls',
         });
     };
 
@@ -103,62 +340,69 @@ export const HistoryScreen = () => {
 
         return (
             <TouchableOpacity
-                activeOpacity={0.7}
+                activeOpacity={0.6}
                 onPress={() => handlePressItem(item)}
-                style={[styles.card, { backgroundColor: colors.card, shadowColor: colors.textPrimary }]}
+                style={[
+                    styles.listItem,
+                    {
+                        backgroundColor: isDark ? '#1E293B' : '#FFFFFF',
+                        shadowColor: isDark ? '#000' : '#64748B',
+                    }
+                ]}
             >
-                <View style={styles.headerRow}>
-                    <View style={{ flex: 1 }}>
-                        <Text style={[styles.leadName, { color: colors.textPrimary }]}>
+                <View style={styles.itemContent}>
+                    <View style={styles.itemHeader}>
+                        <Text style={[styles.itemName, { color: colors.textPrimary }]} numberOfLines={1}>
                             {item.leadName || `Lead #${item.leadId}`}
                         </Text>
-                        <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
-                            {date.toLocaleDateString()} • {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        <Text style={[styles.itemTime, { color: colors.textSecondary }]}>
+                            {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} • {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </Text>
                     </View>
 
-                    {/* Call Button */}
-                    <TouchableOpacity
-                        style={[styles.callBtn, { backgroundColor: '#E0F2FE' }]}
-                        onPress={() => handleCall(item.leadNumber || item.LeadNumber, item)}
-                    >
-                        <Icon name="call" size={moderateScale(20)} color="#0284C7" />
-                    </TouchableOpacity>
+                    <View style={styles.itemSubHeader}>
+                        <View style={styles.tagContainer}>
+                            <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>#{item.leadId}</Text>
+                        </View>
+                        
+                        {activeTab === 'calls' && (
+                            <>
+                                <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
+                                <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>{formatDuration(item.duration)}</Text>
+                            </>
+                        )}
+
+                        <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
+                        <Text style={[styles.callerName, { color: colors.textSecondary }]} numberOfLines={1}>
+                            {item.userId?.name?.split(' ')[0] || 'Unknown'}
+                        </Text>
+                    </View>
+
+                    {item.remark && activeTab === 'calls' && (
+                        <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
+                            <View style={{ marginRight: scale(6) }}>
+                                <Icon name="chatbubble-ellipses-outline" size={moderateScale(12)} color={colors.textSecondary} />
+                            </View>
+                            <Text style={[styles.itemRemark, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {item.remark}
+                            </Text>
+                        </View>
+                    )}
+                    
+                    {activeTab === 'interactions' && (
+                        <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
+                            <View style={{ marginRight: scale(6) }}>
+                                <Icon name={item.source === 'whatsapp' ? 'logo-whatsapp' : 'flash-outline'} size={moderateScale(12)} color={item.source === 'whatsapp' ? '#25D366' : colors.textSecondary} />
+                            </View>
+                            <Text style={[styles.itemRemark, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {item.source ? item.source.charAt(0).toUpperCase() + item.source.slice(1) : 'Unknown'} • {item.outcome || 'No outcome recorded'}
+                            </Text>
+                        </View>
+                    )}
                 </View>
-
-                <View style={styles.detailsRow}>
-                    <View style={styles.detailItem}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Lead No</Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>#{item.leadId}</Text>
-                    </View>
-                    <View style={styles.detailItem}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Duration</Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{formatDuration(item.duration)}</Text>
-                    </View>
-                    <View style={styles.detailItem}>
-                        <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Caller</Text>
-                        <Text style={[styles.detailValue, { color: colors.textPrimary }]}>{item.userId?.name || 'Unknown'}</Text>
-                    </View>
-                </View>
-
-                {item.remark && (
-                    <View style={[styles.remarkBox, { backgroundColor: isDark ? '#374151' : '#F3F4F6', marginTop: 12 }]}>
-                        <Text style={[styles.remarkText, { color: colors.textPrimary }]}>"{item.remark}"</Text>
-                    </View>
-                )}
-
             </TouchableOpacity>
         );
     };
-
-    const renderHeader = () => (
-        <View style={[styles.header, { backgroundColor: colors.background }]}>
-            <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Call History</Text>
-            <TouchableOpacity onPress={loadHistory} style={styles.refreshBtn}>
-                <Icon name="refresh" size={moderateScale(24)} color={colors.primary} />
-            </TouchableOpacity>
-        </View>
-    );
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -166,31 +410,114 @@ export const HistoryScreen = () => {
                 barStyle={isDark ? 'light-content' : 'dark-content'}
                 backgroundColor={colors.background}
             />
-            {renderHeader()}
+            {renderTabs()}
+            
+            {/* Custom Date Modal */}
+            {showCustomDateModal && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
+                    <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
+                        <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Select Custom Range</Text>
+                        
+                        <View style={styles.datePickerRow}>
+                            <View style={styles.datePickerWrapper}>
+                                <Text style={[styles.dateLabel, { color: colors.textSecondary }]}>From</Text>
+                                <TouchableOpacity style={[styles.dateButton, { borderColor: colors.border }]} onPress={() => setShowFromPicker(true)}>
+                                    <Text style={{ color: colors.textPrimary }}>{fromDate.toLocaleDateString()}</Text>
+                                </TouchableOpacity>
+                                <DatePicker
+                                    modal
+                                    mode="date"
+                                    open={showFromPicker}
+                                    date={fromDate}
+                                    minimumDate={new Date('2025-01-01')}
+                                    maximumDate={new Date()}
+                                    onConfirm={(date) => {
+                                        setShowFromPicker(false);
+                                        setFromDate(date);
+                                    }}
+                                    onCancel={() => setShowFromPicker(false)}
+                                    theme={isDark ? 'dark' : 'light'}
+                                />
+                            </View>
+                            <View style={styles.datePickerWrapper}>
+                                <Text style={[styles.dateLabel, { color: colors.textSecondary }]}>To</Text>
+                                <TouchableOpacity style={[styles.dateButton, { borderColor: colors.border }]} onPress={() => setShowToPicker(true)}>
+                                    <Text style={{ color: colors.textPrimary }}>{toDate.toLocaleDateString()}</Text>
+                                </TouchableOpacity>
+                                <DatePicker
+                                    modal
+                                    mode="date"
+                                    open={showToPicker}
+                                    date={toDate}
+                                    minimumDate={new Date('2025-01-01')}
+                                    maximumDate={new Date()}
+                                    onConfirm={(date) => {
+                                        setShowToPicker(false);
+                                        setToDate(date);
+                                    }}
+                                    onCancel={() => setShowToPicker(false)}
+                                    theme={isDark ? 'dark' : 'light'}
+                                />
+                            </View>
+                        </View>
+                        
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity 
+                                style={[styles.modalActionBtn, { borderColor: colors.border, borderWidth: 1 }]} 
+                                onPress={() => { setShowCustomDateModal(false); setDateFilter('all'); }}
+                            >
+                                <Text style={{ color: colors.textPrimary, fontWeight: '600' }}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity 
+                                style={[styles.modalActionBtn, { backgroundColor: colors.primary }]} 
+                                onPress={() => {
+                                    setShowCustomDateModal(false);
+                                    if (dateFilter === 'custom') {
+                                        setTimeout(() => loadHistory(true), 0);
+                                    } else {
+                                        setDateFilter('custom');
+                                    }
+                                }}
+                            >
+                                <Text style={{ color: '#fff', fontWeight: '600' }}>Apply</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            )}
+
+            {renderFilters()}
 
             {history.length === 0 && !loading ? (
-                <View style={styles.emptyContainer}>
-                    <Icon name="time-outline" size={moderateScale(64)} color={colors.textSecondary + '40'} />
-                    <Text style={[styles.emptyText, { color: colors.textSecondary }]}>No call history found.</Text>
-                </View>
+                <EmptyState
+                    icon="time-outline"
+                    title={activeTab === 'calls' ? "No Call History" : "No Interactions"}
+                    description={activeTab === 'calls' ? "You haven't made any calls yet." : "No interaction logs found."}
+                    actionLabel="Refresh Information"
+                    onAction={() => loadHistory(true)}
+                />
             ) : (
                 <FlatList
                     data={history}
                     keyExtractor={(item) => item._id}
                     renderItem={renderItem}
                     contentContainerStyle={styles.listContent}
+                    showsVerticalScrollIndicator={false}
                     refreshControl={
-                        <RefreshControl refreshing={loading} onRefresh={loadHistory} colors={[colors.primary]} />
+                        <RefreshControl refreshing={loading} onRefresh={() => loadHistory(true)} tintColor={colors.primary} colors={[colors.primary]} />
                     }
                 />
             )}
 
-            <CallFeedbackModal
-                visible={feedbackModalVisible}
-                callLog={currentCallLog}
-                leadName={blockingCall?.leadName || 'Unknown Lead'}
-                currentStageId={blockingCall?.stageId}
-                onSave={handleSaveFeedback}
+            {/* Group Filter Modal */}
+            <HistoryFilterModal
+                visible={isGroupFilterModalVisible}
+                onClose={() => setIsGroupFilterModalVisible(false)}
+                initialFilters={groupFilters}
+                onApply={(newFilters) => {
+                    setGroupFilters(newFilters);
+                    setIsGroupFilterModalVisible(false);
+                }}
             />
         </SafeAreaView>
     );
@@ -200,108 +527,216 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
     },
-    header: {
+    tabsContainer: {
         flexDirection: 'row',
-        justifyContent: 'space-between',
+        paddingHorizontal: scale(16),
+        paddingBottom: scale(12),
+        gap: scale(12),
+    },
+    tab: {
+        flex: 1,
+        flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: scale(20),
-        paddingVertical: verticalScale(16),
+        justifyContent: 'center',
+        paddingVertical: scale(10),
+        borderRadius: moderateScale(12),
+        backgroundColor: 'rgba(0,0,0,0.03)',
+        gap: scale(8),
     },
-    headerTitle: {
-        fontSize: moderateScale(28),
-        fontWeight: '800',
+    activeTab: {
+        backgroundColor: '#0284C7',
     },
-    refreshBtn: {
-        padding: scale(8),
+    tabText: {
+        fontSize: moderateScale(14),
+        fontWeight: '600',
+    },
+    filtersContainer: {
+        flexDirection: 'row',
+        paddingHorizontal: scale(16),
+        paddingVertical: scale(12),
+        gap: scale(12),
+        zIndex: 100,
+        elevation: 10,
+        alignItems: 'flex-end', // Align icon button to bottom of item (no label)
+    },
+    filterGroup: {
+        flex: 1,
+        gap: scale(8),
+        zIndex: 100, // Ensure inner groups stack correctly
+    },
+    filterGroupLabel: {
+        fontSize: moderateScale(12),
+        fontWeight: '700',
+        textTransform: 'uppercase',
+    },
+    dropdownTrigger: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: scale(12),
+        paddingVertical: verticalScale(10),
+        borderWidth: 1,
+        borderRadius: moderateScale(12),
+    },
+    dropdownText: {
+        fontSize: moderateScale(13),
+        flex: 1,
+        marginRight: scale(4),
+    },
+    dropdownList: {
+        position: 'absolute',
+        top: verticalScale(70),
+        left: 0,
+        right: 0,
+        borderWidth: 1,
+        borderRadius: moderateScale(12),
+        maxHeight: verticalScale(300), // Height ample to display 6 options without scroll
+        overflow: 'hidden',
+        elevation: 15, // Extremely high elevation for dropdowns overlaying FlatLists
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.15,
+        shadowRadius: 8,
+        zIndex: 1000,
+    },
+    filterGroupIcon: {
+        gap: scale(8),
+        justifyContent: 'flex-end',
+    },
+    dropdownItem: {
+        paddingVertical: verticalScale(12),
+        paddingHorizontal: scale(16),
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: 'rgba(0,0,0,0.1)',
+    },
+    itemTitle: {
+        fontSize: moderateScale(14),
     },
     listContent: {
-        padding: scale(16),
-        paddingBottom: verticalScale(80),
+        paddingHorizontal: scale(16),
+        paddingVertical: verticalScale(12),
+        paddingBottom: verticalScale(100),
     },
-    card: {
+    datePickerRow: {
+        flexDirection: 'row',
+        gap: 16,
+        marginTop: 16,
+    },
+    datePickerWrapper: {
+        flex: 1,
+    },
+    dateLabel: {
+        fontSize: 12,
+        marginBottom: 4,
+    },
+    dateButton: {
+        height: 40,
+        borderWidth: 1,
+        borderRadius: 8,
+        justifyContent: 'center',
+        paddingHorizontal: 12,
+    },
+    modalContent: {
+        width: '85%',
+        borderRadius: 16,
+        padding: 24,
+        elevation: 5,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+    },
+    modalTitle: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        marginBottom: 8,
+    },
+    modalActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        marginTop: 24,
+        gap: 12,
+    },
+    modalActionBtn: {
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 8,
+    },
+    listItem: {
+        flexDirection: 'row',
+        padding: scale(14),
+        marginBottom: verticalScale(10),
         borderRadius: moderateScale(16),
-        padding: scale(16),
-        marginBottom: verticalScale(12),
+        alignItems: 'center',
         shadowOffset: { width: 0, height: verticalScale(2) },
         shadowOpacity: 0.05,
         shadowRadius: moderateScale(8),
-        elevation: 2,
+        elevation: 1.5,
     },
-    headerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: verticalScale(16),
-    },
-    iconBox: {
-        width: moderateScale(40),
-        height: moderateScale(40),
-        borderRadius: moderateScale(20),
-        alignItems: 'center',
+    iconContainer: {
+        width: moderateScale(44),
+        height: moderateScale(44),
+        borderRadius: moderateScale(22),
         justifyContent: 'center',
-        marginRight: scale(12),
+        alignItems: 'center',
+        marginRight: scale(14),
     },
-    leadName: {
-        fontSize: moderateScale(16),
-        fontWeight: '700',
+    itemContent: {
+        flex: 1,
+        justifyContent: 'center',
     },
-    leadNumber: {
-        fontSize: moderateScale(13),
-        fontWeight: '500',
-        marginTop: verticalScale(2),
-    },
-    timestamp: {
-        fontSize: moderateScale(12),
-        marginTop: verticalScale(2),
-    },
-    stageBadge: {
-        paddingHorizontal: scale(10),
-        paddingVertical: verticalScale(4),
-        borderRadius: moderateScale(12),
-    },
-    stageText: {
-        fontSize: moderateScale(11),
-        fontWeight: '700',
-    },
-    callBtn: {
-        padding: scale(8),
-        borderRadius: moderateScale(20),
-        marginLeft: scale(8),
-    },
-    detailsRow: {
+    itemHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
+        alignItems: 'center',
         marginBottom: verticalScale(4),
     },
-    detailItem: {
-        flex: 1,
-    },
-    detailLabel: {
-        fontSize: moderateScale(11),
-        marginBottom: verticalScale(2),
-        textTransform: 'uppercase',
+    itemName: {
+        fontSize: moderateScale(16),
         fontWeight: '700',
+        flex: 1,
+        marginRight: scale(8),
+        letterSpacing: -0.2,
     },
-    detailValue: {
-        fontSize: moderateScale(14),
+    itemTime: {
+        fontSize: moderateScale(11),
         fontWeight: '500',
     },
-    remarkBox: {
-        padding: scale(12),
-        borderRadius: moderateScale(8),
-        marginTop: verticalScale(12),
-    },
-    remarkText: {
-        fontSize: moderateScale(14),
-        fontStyle: 'italic',
-    },
-    emptyContainer: {
-        flex: 1,
+    itemSubHeader: {
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: verticalScale(100),
     },
-    emptyText: {
-        marginTop: verticalScale(16),
-        fontSize: moderateScale(16),
-    }
+    tagContainer: {
+        backgroundColor: 'rgba(0,0,0,0.04)',
+        paddingHorizontal: scale(6),
+        paddingVertical: verticalScale(2),
+        borderRadius: moderateScale(6),
+    },
+    itemDetail: {
+        fontSize: moderateScale(12),
+        fontWeight: '600',
+    },
+    dotSeparator: {
+        fontSize: moderateScale(12),
+        marginHorizontal: scale(6),
+        opacity: 0.5,
+    },
+    callerName: {
+        fontSize: moderateScale(12),
+        fontWeight: '500',
+        flex: 1,
+    },
+    remarkBubble: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: verticalScale(8),
+        paddingHorizontal: scale(8),
+        paddingVertical: verticalScale(4),
+        borderRadius: moderateScale(8),
+        alignSelf: 'flex-start',
+        maxWidth: '100%',
+    },
+    itemRemark: {
+        fontSize: moderateScale(12),
+        fontWeight: '500',
+        flexShrink: 1,
+    },
 });

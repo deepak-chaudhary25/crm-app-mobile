@@ -1,28 +1,132 @@
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, FlatList, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
 import { historyService, Interaction } from '../services/history';
-import { callLogsApi, schedulesApi } from '../services/api';
+import { callLogsApi, schedulesApi, leadsApi, usersApi } from '../services/api';
+import { authService } from '../services/auth';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
 import { ScheduleModal } from '../components/ScheduleModal';
-import { CallFeedbackModal } from '../components/CallFeedbackModal';
-import { useCallHandling } from '../hooks/useCallHandling';
+import { useCallHandlingContext } from '../context/CallHandlingContext';
 import { Linking, Alert } from 'react-native';
 
 export const LeadDetailScreen = () => {
-    const navigation = useNavigation();
+    const navigation = useNavigation<any>();
     const route = useRoute<any>();
     const { colors, isDark } = useAppTheme();
-    const { lead } = route.params;
 
-    const { handleCall: performCall, feedbackModalVisible, currentCallLog, blockingCall, handleSaveFeedback } = useCallHandling();
+    // Handle both full object (navigation) and ID-only (deep link)
+    const initialLead = route.params?.lead;
+    const leadId = route.params?.leadId || initialLead?.id || initialLead?._id || initialLead?.leadId;
+
+    // We keep initialLead for instant rendering, but always try to fetch fresh data
+    const [lead, setLead] = useState<any>(initialLead || null);
+    const [loading, setLoading] = useState(true); // Always true initially to ensure fetch
+    const [error, setError] = useState('');
+
+    const { handleCall: performCall } = useCallHandlingContext();
 
     const [modalVisible, setModalVisible] = useState(false);
+
+    useEffect(() => {
+        if (leadId) {
+            fetchLeadDetails();
+        } else if (!initialLead) {
+            // Nothing to show, go back
+            navigation.goBack();
+        }
+    }, [leadId]);
+
+    const getInitials = (name: string) => {
+        if (!name) return '??';
+        const parts = name.split(' ');
+        if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+        return name.substring(0, 2).toUpperCase();
+    };
+
+    const getInitialsColor = (name: string) => {
+        const colors = ['#FEF3C7', '#DBEAFE', '#F3F4F6', '#FEE2E2', '#E0E7FF', '#D1FAE5'];
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+            hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        return colors[Math.abs(hash) % colors.length];
+    };
+
+    const fetchLeadDetails = async () => {
+        try {
+            const data = await leadsApi.getLead(leadId);
+
+
+            // Fetch users to resolve assignedTo name, same as LeadScreen
+            let assignedName = data.assignedTo?.name || data.assignedTo;
+            try {
+                const hasUserPermission = await authService.hasPermission('user', 'read');
+
+                // data.assignedTo might be an object or a string depending on backend population
+                const assignedToId = typeof data.assignedTo === 'object' ? data.assignedTo?._id || data.assignedTo?.id : data.assignedTo;
+
+                if (hasUserPermission && typeof assignedToId === 'string') {
+                    const res = await usersApi.getUsers();
+                    console.log('USERS_API_RESPONSE:', JSON.stringify(res).substring(0, 150));
+                    // React native APIs sometimes double-wrap in data, or the response IS the array
+                    const usersList = Array.isArray(res) ? res : (res?.data?.users || res?.data || []);
+
+                    const assignedUser = usersList.find((u: any) => u._id === assignedToId || u.id === assignedToId);
+                    if (assignedUser) {
+                        assignedName = assignedUser.name;
+                    }
+                }
+            } catch (userErr) {
+                console.warn('Failed to fetch user list for assigned name', userErr);
+            }
+
+            // Flatten/map the data just like LeadScreen so the UI works identically
+            const flatLead = {
+                ...data, // Spread raw data first so it doesn't overwrite our mapped fields
+                id: data._id,
+                _id: data._id,
+                leadId: data.leadId?.toString(),
+                name: data.name,
+                assignedTo: assignedName || 'Unassigned',
+                status: data.stageId?.name || data.status || 'New',
+                score: data.healthScore || 0,
+                phoneNumber: data.phone,
+                email: data.email,
+                initials: getInitials(data.name),
+                initialsColor: getInitialsColor(data.name),
+            };
+            setLead(flatLead);
+        } catch (err: any) {
+            console.error('Failed to fetch lead details', err);
+            setError(err.message || 'Failed to load lead details');
+            if (!lead) {
+                Alert.alert('Error', 'Could not load lead details');
+                navigation.goBack();
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // IMPORTANT: All hooks must be called before these conditional returns.
+    // Ensure no additional use... calls exist below this point.
+
+    if (loading && !lead) {
+        return (
+            <SafeAreaView style={[styles.container, { backgroundColor: colors.background, justifyContent: 'center', alignItems: 'center' }]}>
+                <ActivityIndicator size="large" color={colors.primary} />
+            </SafeAreaView>
+        );
+    }
+
+    if (!lead) {
+        return null; // Should have gone back or showing loading
+    }
 
     const handleCall = () => {
         performCall(lead.phoneNumber, {
@@ -62,6 +166,14 @@ export const LeadDetailScreen = () => {
         setModalVisible(true);
     };
 
+    const handleViewHistory = () => {
+        navigation.navigate('LeadHistory', {
+            leadId: lead.leadId || lead.id || lead._id,
+            leadName: lead.name,
+            leadNumber: lead.phoneNumber
+        });
+    };
+
     const handleSaveSchedule = async (date: Date, notes: string) => {
         try {
             const idToUse = lead.leadId || lead.id || lead._id;
@@ -84,9 +196,7 @@ export const LeadDetailScreen = () => {
 
 
 
-    useEffect(() => {
-        // loadData(); // No longer needed if we removed history/reminders
-    }, []);
+
 
     const InfoRow = ({ icon, label, value }: { icon: string, label: string, value: string }) => (
         <View style={styles.infoRow}>
@@ -137,19 +247,24 @@ export const LeadDetailScreen = () => {
 
             {/* Action Buttons */}
             <View style={styles.actionContainer}>
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#E0F2FE' }]} onPress={handleCall}>
-                    <Icon name="call" size={moderateScale(24)} color="#0284C7" />
-                    <Text style={[styles.actionText, { color: '#0284C7' }]}>Call</Text>
+                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: isDark ? '#38BDF820' : '#E0F2FE' }]} onPress={handleCall}>
+                    <Icon name="call" size={moderateScale(24)} color={isDark ? '#38BDF8' : '#0284C7'} />
+                    <Text style={[styles.actionText, { color: isDark ? '#38BDF8' : '#0284C7' }]}>Call</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#DCFCE7' }]} onPress={handleWhatsApp}>
-                    <Icon name="logo-whatsapp" size={moderateScale(24)} color="#16A34A" />
-                    <Text style={[styles.actionText, { color: '#16A34A' }]}>WhatsApp</Text>
+                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: isDark ? '#4ADE8020' : '#DCFCE7' }]} onPress={handleWhatsApp}>
+                    <Icon name="logo-whatsapp" size={moderateScale(24)} color={isDark ? '#4ADE80' : '#16A34A'} />
+                    <Text style={[styles.actionText, { color: isDark ? '#4ADE80' : '#16A34A' }]}>WhatsApp</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#F3E8FF' }]} onPress={handleSchedule}>
-                    <Icon name="calendar" size={moderateScale(24)} color="#9333EA" />
-                    <Text style={[styles.actionText, { color: '#9333EA' }]}>Schedule</Text>
+                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: isDark ? '#C084FC20' : '#F3E8FF' }]} onPress={handleSchedule}>
+                    <Icon name="calendar" size={moderateScale(24)} color={isDark ? '#C084FC' : '#9333EA'} />
+                    <Text style={[styles.actionText, { color: isDark ? '#C084FC' : '#9333EA' }]}>Schedule</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: isDark ? '#FB923C20' : '#FFEDD5' }]} onPress={handleViewHistory}>
+                    <Icon name="time-outline" size={moderateScale(24)} color={isDark ? '#FB923C' : '#EA580C'} />
+                    <Text style={[styles.actionText, { color: isDark ? '#FB923C' : '#EA580C' }]}>History</Text>
                 </TouchableOpacity>
             </View>
 
@@ -173,14 +288,7 @@ export const LeadDetailScreen = () => {
                 leadName={lead.name}
             />
 
-            <CallFeedbackModal
-                visible={feedbackModalVisible}
-                callLog={currentCallLog}
-                leadName={blockingCall?.leadName || lead.name}
-                currentStageId={blockingCall?.stageId} // If flat lead doesn't have stageId, this might be issue. 
-                // However, the modal allows selecting stage.
-                onSave={handleSaveFeedback}
-            />
+
         </SafeAreaView>
     );
 };
@@ -194,7 +302,7 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         paddingHorizontal: scale(16),
-        paddingVertical: verticalScale(12),
+        paddingBottom: verticalScale(12),
     },
     backBtn: {
         padding: scale(4),
@@ -371,19 +479,19 @@ const styles = StyleSheet.create({
     actionContainer: {
         flexDirection: 'row',
         justifyContent: 'space-around',
-        paddingHorizontal: scale(20),
+        paddingHorizontal: scale(16),
         marginBottom: verticalScale(16),
     },
     actionBtn: {
         alignItems: 'center',
         justifyContent: 'center',
-        width: moderateScale(80),
+        width: moderateScale(70),
         height: moderateScale(70),
         borderRadius: moderateScale(12),
         gap: verticalScale(4),
     },
     actionText: {
-        fontSize: moderateScale(12),
+        fontSize: moderateScale(11),
         fontWeight: '600',
     },
 });
