@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView } from 'react-native';
+import React, { useState, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import DatePicker from 'react-native-date-picker';
 import { useFocusEffect } from '@react-navigation/native';
@@ -15,6 +15,15 @@ export const FollowupScreen = ({ navigation }: any) => {
     const [schedules, setSchedules] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    
+    // Pagination
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [isMoreLoading, setIsMoreLoading] = useState(false);
+    const pageRef = useRef(1);
+    const hasMoreRef = useRef(true);
+    const isMoreLoadingRef = useRef(false);
+    const LIMIT = 10;
     const { handleCall: performCall } = useCallHandlingContext();
 
     // Filters
@@ -24,51 +33,87 @@ export const FollowupScreen = ({ navigation }: any) => {
     // Custom Dates
     const [fromDate, setFromDate] = useState<Date>(new Date());
     const [toDate, setToDate] = useState<Date>(new Date());
+    const [appliedFromDate, setAppliedFromDate] = useState<Date>(new Date());
+    const [appliedToDate, setAppliedToDate] = useState<Date>(new Date());
     const [showFromPicker, setShowFromPicker] = useState(false);
     const [showToPicker, setShowToPicker] = useState(false);
     const [showCustomDateModal, setShowCustomDateModal] = useState(false);
 
-    const fetchSchedules = useCallback(async (isRefresh = false) => {
-        if (showCustomDateModal) return; // Prevent background fetching while modal is open
-        if (!isRefresh) setLoading(true);
+    const fetchSchedules = useCallback(async (pageNumber = 1, shouldRefresh = false) => {
+        if (!shouldRefresh && (!hasMoreRef.current || isMoreLoadingRef.current)) return;
+        if (shouldRefresh) {
+            setLoading(true);
+        } else {
+            setIsMoreLoading(true);
+            isMoreLoadingRef.current = true;
+        }
+
         try {
-            const params: any = {};
+            const params: any = {
+                page: pageNumber,
+                limit: LIMIT
+            };
             
             if (activeFilter === 'upcoming' || activeFilter === 'overdue') {
                 params.status = activeFilter;
             } else if (activeFilter === 'today') {
                 params.dateFilter = 'today';
             } else if (activeFilter === 'custom') {
-                const toDateStr = (d: Date) => d.toISOString().split('T')[0];
-                params.fromDate = toDateStr(new Date(fromDate));
-                params.toDate = toDateStr(new Date(toDate));
+                const toDateStr = (d: Date) => {
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    };
+                params.dateFilter = 'custom';
+                params.from = toDateStr(new Date(appliedFromDate));
+                params.to = toDateStr(new Date(appliedToDate));
             }
 
-            console.log('🚀 [API Request] GET /lead-schedules - Payload:', JSON.stringify(params, null, 2));
-
+            console.log('Fetching Schedules with payload:', params);
             const data = await schedulesApi.getSchedules(params);
-            
-            console.log('✅ [API Response] /lead-schedules:', JSON.stringify(data, null, 2));
+            console.log('Schedules response:', data);
 
-            // Handling array response or nested data array
-            setSchedules(Array.isArray(data) ? data : (data.data || []));
+            const newData = Array.isArray(data) ? data : (data.data || []);
+            
+            if (shouldRefresh) {
+                setSchedules(newData);
+                setPage(1);
+                pageRef.current = 1;
+            } else {
+                setSchedules(prev => [...prev, ...newData]);
+                setPage(pageNumber);
+                pageRef.current = pageNumber;
+            }
+            
+            const more = newData.length === LIMIT;
+            setHasMore(more);
+            hasMoreRef.current = more;
         } catch (error) {
             console.error('Failed to fetch schedules:', error);
         } finally {
             setLoading(false);
             setRefreshing(false);
+            setIsMoreLoading(false);
+            isMoreLoadingRef.current = false;
         }
-    }, [activeFilter, fromDate, toDate, showCustomDateModal]);
+    }, [activeFilter, appliedFromDate, appliedToDate]);
 
     useFocusEffect(
         useCallback(() => {
-            fetchSchedules();
+            fetchSchedules(1, true);
         }, [fetchSchedules])
     );
 
     const onRefresh = () => {
         setRefreshing(true);
-        fetchSchedules(true);
+        fetchSchedules(1, true);
+    };
+
+    const handleLoadMore = () => {
+        if (!isMoreLoadingRef.current && hasMoreRef.current && !loading) {
+            fetchSchedules(pageRef.current + 1, false);
+        }
     };
 
     const renderItem = ({ item }: { item: any }) => (
@@ -102,6 +147,18 @@ export const FollowupScreen = ({ navigation }: any) => {
                         {new Date(item.scheduledAt).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </Text>
                 </View>
+
+                {item.stageName && (
+                    <View style={[
+                        styles.statusBadge,
+                        { backgroundColor: isDark ? '#8B5CF620' : '#EDE9FE' }
+                    ]}>
+                        <Text style={[
+                            styles.statusText,
+                            { color: isDark ? '#A78BFA' : '#7C3AED' }
+                        ]}>{item.stageName.toUpperCase()}</Text>
+                    </View>
+                )}
 
                 {item.leadNumber && (
                     <TouchableOpacity 
@@ -148,6 +205,9 @@ export const FollowupScreen = ({ navigation }: any) => {
                             onPress={() => {
                                 if (filter.id === 'custom') {
                                     setShowCustomDateModal(true);
+                                    // Sync local picker state with currently applied dates when opening
+                                    setFromDate(appliedFromDate);
+                                    setToDate(appliedToDate);
                                 } else {
                                     setActiveFilter(filter.id);
                                 }
@@ -194,7 +254,7 @@ export const FollowupScreen = ({ navigation }: any) => {
                                     open={showFromPicker}
                                     date={fromDate}
                                     minimumDate={new Date('2024-01-01')}
-                                    maximumDate={new Date()}
+                                    maximumDate={toDate || new Date()}
                                     onConfirm={(date) => {
                                         setShowFromPicker(false);
                                         setFromDate(date);
@@ -213,7 +273,7 @@ export const FollowupScreen = ({ navigation }: any) => {
                                     mode="date"
                                     open={showToPicker}
                                     date={toDate}
-                                    minimumDate={new Date('2024-01-01')}
+                                    minimumDate={fromDate}
                                     maximumDate={new Date()}
                                     onConfirm={(date) => {
                                         setShowToPicker(false);
@@ -235,12 +295,14 @@ export const FollowupScreen = ({ navigation }: any) => {
                             <TouchableOpacity 
                                 style={[styles.modalActionBtn, { backgroundColor: colors.primary }]} 
                                 onPress={() => {
-                                    setShowCustomDateModal(false);
-                                    if (activeFilter === 'custom') {
-                                        setTimeout(() => fetchSchedules(true), 0);
-                                    } else {
-                                        setActiveFilter('custom');
+                                    if (fromDate > toDate) {
+                                        Alert.alert('Invalid Range', 'The "From" date cannot be after the "To" date.');
+                                        return;
                                     }
+                                    setAppliedFromDate(fromDate);
+                                    setAppliedToDate(toDate);
+                                    setShowCustomDateModal(false);
+                                    setActiveFilter('custom');
                                 }}
                             >
                                 <Text style={{ color: '#fff', fontWeight: '600' }}>Apply</Text>
@@ -261,16 +323,35 @@ export const FollowupScreen = ({ navigation }: any) => {
             ) : (
                 <FlatList
                     data={schedules}
-                    keyExtractor={(item) => item._id}
+                    keyExtractor={(item, index) => `${item._id || index}-${index}`}
                     renderItem={renderItem}
                     contentContainerStyle={styles.listContainer}
-                    refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
-                    ListEmptyComponent={
-                        <EmptyState 
-                            title="No Scheduled Follow-ups" 
-                            description="You don't have any follow-ups for the selected filters." 
-                            icon="calendar-outline" 
+                    showsVerticalScrollIndicator={false}
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={() => (
+                        isMoreLoading ? (
+                            <View style={{ paddingVertical: 20 }}>
+                                <ActivityIndicator color={colors.primary} />
+                            </View>
+                        ) : null
+                    )}
+                    refreshControl={
+                        <RefreshControl 
+                            refreshing={loading && schedules.length === 0} 
+                            onRefresh={onRefresh} 
+                            tintColor={colors.primary} 
+                            colors={[colors.primary]}
                         />
+                    }
+                    ListEmptyComponent={
+                        !loading ? (
+                            <EmptyState 
+                                title="No Scheduled Follow-ups" 
+                                description="You don't have any follow-ups for the selected filters." 
+                                icon="calendar-outline" 
+                            />
+                        ) : null
                     }
                 />
             )}

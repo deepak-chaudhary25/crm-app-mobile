@@ -19,15 +19,10 @@ api.interceptors.request.use(
         const token = await authService.getToken();
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
+        }
+        if (config.data) {
         }
-
-        console.log('🚀 [API Request]', config.method?.toUpperCase(), config.url);
-        console.log('   Headers:', config.headers);
-        if (config.data) {
-            console.log('   Payload:', JSON.stringify(config.data, null, 2));
-        }
-        if (config.params) {
-            console.log('   Params:', JSON.stringify(config.params, null, 2));
+        if (config.params) {
         }
 
         return config;
@@ -42,9 +37,8 @@ import { navigationRef } from '../navigation/AppNavigator';
 
 // Response Interceptor: Log Response & Handle Errors
 api.interceptors.response.use(
-    (response) => {
-        console.log('✅ [API Response]', response.status, response.config.url);
-        // console.log('   Data:', JSON.stringify(response.data, null, 2)); 
+    (response) => {
+
         return response;
     },
     async (error) => {
@@ -53,8 +47,7 @@ api.interceptors.response.use(
             console.error('   Data:', JSON.stringify(error.response.data, null, 2));
 
             // Handle 401 Unauthorized
-            if (error.response.status === 401) {
-                console.log('⚠️ Session expired or unauthorized. Redirecting to Login...');
+            if (error.response.status === 401) {
                 await authService.removeToken();
                 if (navigationRef.isReady()) {
                     navigationRef.navigate('Login' as never);
@@ -218,9 +211,9 @@ export const callLogsApi = {
             throw error.response?.data || { message: 'Failed to fetch call logs' };
         }
     },
-    getLeadLogs: async (leadId: number) => {
+    getLeadLogs: async (leadId: number, params: any = {}) => {
         try {
-            const response = await api.get(`/call-logs/lead/${leadId}`);
+            const response = await api.get(`/call-logs/lead/${leadId}`, { params });
             return response.data;
         } catch (error: any) {
             throw error.response?.data || { message: 'Failed to fetch lead logs' };
@@ -250,9 +243,9 @@ export const interactionLogsApi = {
             throw error.response?.data || { message: 'Failed to fetch interaction logs' };
         }
     },
-    getByLeadId: async (leadId: number | string) => {
+    getByLeadId: async (leadId: number | string, params: any = {}) => {
         try {
-            const response = await api.get(`/interaction-logs/lead/${leadId}`);
+            const response = await api.get(`/interaction-logs/lead/${leadId}`, { params });
             return response.data;
         } catch (error: any) {
             throw error.response?.data || { message: 'Failed to fetch interaction logs for lead' };
@@ -278,14 +271,43 @@ export const schedulesApi = {
         }
     },
     completeSchedule: async (scheduleId: string) => {
-        try {
-            console.log(`🚀 [API Request] PATCH /lead-schedules/${scheduleId}/complete`);
-            const response = await api.patch(`/lead-schedules/${scheduleId}/complete`);
-            console.log('✅ [API Response] /lead-schedules/:id/complete:', JSON.stringify(response.data, null, 2));
+        try {
+            const response = await api.patch(`/lead-schedules/${scheduleId}/complete`);
             return response.data;
         } catch (error: any) {
             console.error('❌ [API Error] completeSchedule:', error.response?.data || error.message);
             throw error.response?.data || { message: 'Failed to complete schedule' };
+        }
+    }
+};
+
+// Public axios instance (no auth token) for PCAT APIs
+const publicApi = axios.create({
+    baseURL: 'https://api.upskillab.com',
+    headers: { 'Content-Type': 'application/json' },
+});
+
+export const pcatApi = {
+    getOngoingExam: async () => {
+        try {
+            console.log('[PCAT] Fetching ongoing exam...');
+            const response = await publicApi.get('/pcat/exams/ongoing/exam');
+            console.log('[PCAT] Ongoing exam response:', response.data);
+            return response.data;
+        } catch (error: any) {
+            console.log('[PCAT] Ongoing exam error:', error.response?.data || error.message);
+            throw error.response?.data || { message: 'Failed to fetch ongoing exam' };
+        }
+    },
+    registerUser: async (data: { examId: string; name: string; email: string; number: string }) => {
+        try {
+            console.log('[PCAT] Register payload:', data);
+            const response = await publicApi.post('/pcat-users/register', data);
+            console.log('[PCAT] Register response:', response.data);
+            return response.data;
+        } catch (error: any) {
+            console.log('[PCAT] Register error:', error.response?.data || error.message);
+            throw error.response?.data || { message: 'Failed to register for exam' };
         }
     }
 };

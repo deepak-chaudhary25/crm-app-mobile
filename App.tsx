@@ -19,14 +19,12 @@ function App(): React.JSX.Element {
     return notifee.onForegroundEvent(({ type, detail }) => {
       switch (type) {
         case EventType.PRESS:
-          console.log('👆 User pressed notification', detail.notification);
           const data = detail.notification?.data;
           if (data?.url) {
             let url = data.url as string;
             if (url.includes('{leadId}') && data.leadId) {
               url = url.replace('{leadId}', data.leadId as string);
             }
-            console.log('🔗 [Notification] Opening Foreground Deep Link:', url);
             Linking.openURL(url).catch(err => console.error('Deep Link Error:', err));
           }
           break;

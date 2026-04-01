@@ -42,12 +42,20 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
     }, []);
 
     const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-        console.log('CallHandlingProvider: handleAppStateChange', { nextAppState, current: appState.current });
-
         if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
             const trackingNumber = await AsyncStorage.getItem('active_call_number');
-            console.log('App became active. Tracking number:', trackingNumber);
             if (trackingNumber) {
+                // Guard: skip if call was initiated very recently (< 5s ago)
+                // This prevents premature checks when the user switches apps during a call
+                const callStartStr = await AsyncStorage.getItem('call_start_time');
+                if (callStartStr) {
+                    const elapsed = Date.now() - parseInt(callStartStr, 10);
+                    if (elapsed < 5000) {
+                        console.log('[CallHandler] App active but call started <5s ago, skipping check');
+                        appState.current = nextAppState;
+                        return;
+                    }
+                }
                 await checkLastCall(trackingNumber);
             }
         }
@@ -55,76 +63,69 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
     };
 
     const checkLastCall = async (targetNumber: string) => {
-        console.log('checkLastCall triggered for:', targetNumber);
         setTimeout(async () => {
             const log = await callLogService.getLastCall(targetNumber);
-            await AsyncStorage.removeItem('active_call_number');
-            console.log('callLogService.getLastCall result:', log);
 
             if (log) {
                 // Check if we just processed this number recently (within last 10 seconds)
                 if (lastProcessedCall.current &&
                     lastProcessedCall.current.phoneNumber === log.phoneNumber &&
                     (Date.now() - lastProcessedCall.current.timestamp < 10000)) {
-                    console.log('Skipping checkLastCall, already processed recently', lastProcessedCall.current);
                     return;
                 }
+
+                // Call ended — clean up tracking and show modal
+                await AsyncStorage.removeItem('active_call_number');
+                await AsyncStorage.removeItem('call_start_time');
 
                 // Ensure blockingCall is set, otherwise try to recover it from storage
                 if (!blockingCall) {
                     const pending = await historyService.getPendingFeedback();
                     if (pending) {
-                        console.log('Recovered blockingCall from storage in checkLastCall');
                         setBlockingCall(pending);
                     } else {
-                        console.warn('Could not recover blockingCall in checkLastCall. Proceeding without context might fail save.');
+                        console.warn('Could not recover blockingCall in checkLastCall.');
                     }
                 }
-
-                console.log('Setting currentCallLog and opening modal from checkLastCall');
                 setCurrentCallLog(log);
                 setFeedbackModalVisible(true);
             } else {
-                console.log('No call log found for tracking number. Assuming call cancelled.');
-                // User cancelled the call, so we must unblock them immediately
-                await historyService.clearPendingFeedback();
-                setBlockingCall(null);
+                // No call log found — call may still be ongoing or was cancelled
+                // Only clear if enough time has passed since call was started (>30s = likely a cancel)
+                const callStartStr = await AsyncStorage.getItem('call_start_time');
+                const elapsed = callStartStr ? Date.now() - parseInt(callStartStr, 10) : 0;
+
+                if (elapsed > 30000) {
+                    // Enough time passed but no call log — likely a cancelled/failed call
+                    console.log('[CallHandler] No call log found after 30s+, clearing pending state');
+                    await AsyncStorage.removeItem('active_call_number');
+                    await AsyncStorage.removeItem('call_start_time');
+                    await historyService.clearPendingFeedback();
+                    setBlockingCall(null);
+                } else {
+                    // Call might still be ongoing — do NOT clear anything
+                    console.log('[CallHandler] No call log yet, call may still be ongoing. Keeping tracking alive.');
+                }
             }
         }, 1500);
     };
 
     const checkBlockingState = async () => {
-        console.log('checkBlockingState called');
         const pending = await historyService.getPendingFeedback();
-        console.log('Pending feedback:', pending);
 
         if (pending) {
             setBlockingCall(pending);
             const log = await callLogService.getLastCall(pending.phoneNumber);
-            console.log('Blocking call log found:', log);
 
             if (log) {
-                // Determine if the call was actually connected or at least dialed
-                // Some phones log 0 duration for missed/cancelled. 
-                // User wants "actual call has been placed (call dialed)"
-                // A cancelled call usually doesn't appear in logs or appears with 0 duration.
-                // If getLastCall returned a log, it exists in history. 
-                // We should respect that.
-
                 setCurrentCallLog(log);
                 setFeedbackModalVisible(true);
             } else {
-                // If strictly requiring actual call log, we should NOT show modal if log is missing.
-                // This handles cases where user pressed 'call' but cancelled immediately before dialer registered it.
-                console.log('No call log found in device history. Assuming call was not placed or cancelled.');
-
+                // No call log found on app restart/focus
                 // Clear the pending state since it was likely a cancelled attempt
-                // user can try calling again.
                 await historyService.clearPendingFeedback();
                 setBlockingCall(null);
             }
-        } else {
-            console.log('No pending feedback found');
         }
     };
 
@@ -178,18 +179,19 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
         });
 
         await AsyncStorage.setItem('active_call_number', phoneNumber);
+        await AsyncStorage.setItem('call_start_time', Date.now().toString());
 
         Linking.openURL(`tel:${phoneNumber}`).catch(() => {
             Alert.alert('Error', 'Unable to open dialer');
             historyService.clearPendingFeedback();
             AsyncStorage.removeItem('active_call_number');
+            AsyncStorage.removeItem('call_start_time');
             setBlockingCall(null);
-            onFeedbackSuccessRef.current = undefined; // Clear callback on failure
+            onFeedbackSuccessRef.current = undefined;
         });
     };
 
     const handleSaveFeedback = async (outcome: string, remarks: string, selectedStageId?: string, scheduleDate?: Date) => {
-        console.log('handleSaveFeedback called', { outcome, remarks, selectedStageId, hasSchedule: !!scheduleDate, blockingCallState: !!blockingCall, currentCallLogState: !!currentCallLog });
 
         // Recover blockingCall if missing (e.g. app restart)
         let activeBlockingCall = blockingCall;
@@ -197,7 +199,6 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
             console.warn('Missing blockingCall in handleSaveFeedback, attempting recovery...');
             const pending = await historyService.getPendingFeedback();
             if (pending) {
-                console.log('Recovered blockingCall from storage');
                 activeBlockingCall = pending;
                 setBlockingCall(pending);
             }
@@ -210,7 +211,7 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
             return;
         }
 
-        const blockingCallToUse = activeBlockingCall; // Use local variable for safety
+        const blockingCallToUse = activeBlockingCall;
 
         setLoading(true);
         try {
@@ -240,19 +241,14 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
                     startedAt: startedAtIso
                 };
 
-                console.log('🚀 [Call Log Payload]', JSON.stringify(payload, null, 2));
-
                 const response = await callLogsApi.createLog(payload);
 
-                console.log('Call log created successfully. Response:', JSON.stringify(response, null, 2));
-
                 if (scheduleDate) {
-                    const { schedulesApi } = require('../services/api'); // Lazy import to avoid circular dependency
+                    const { schedulesApi } = require('../services/api');
                     await schedulesApi.createSchedule({
                         leadId: blockingCallToUse.leadIdNumeric,
                         scheduledAt: scheduleDate.toISOString(),
                     });
-                    console.log('Follow-up schedule created successfully.');
                 }
 
                 // --- AUTO-COMPLETE SCHEDULE IF CALL WAS TRIGGERED FROM A FOLLOWUP TASK ---
@@ -260,10 +256,8 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
                     try {
                         const { schedulesApi } = require('../services/api');
                         await schedulesApi.completeSchedule(blockingCallToUse.scheduleId);
-                        console.log(`Task ${blockingCallToUse.scheduleId} marked as complete.`);
                     } catch (taskErr) {
                         console.error('Failed to auto-complete task:', taskErr);
-                        // We do not block the success alert since the call log itself was saved.
                     }
                 }
 
@@ -293,18 +287,16 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
                 timestamp: Date.now()
             };
 
-            // Also ensure active_call_number is cleared
+            // Also ensure call tracking is cleared
             await AsyncStorage.removeItem('active_call_number');
-
-            console.log('Closing modal and clearing blocking call');
+            await AsyncStorage.removeItem('call_start_time');
             setBlockingCall(null);
             setFeedbackModalVisible(false);
 
             // Execute the success callback (e.g., refresh lead list)
             if (onFeedbackSuccessRef.current) {
-                console.log('Calling onFeedbackSuccess callback');
                 onFeedbackSuccessRef.current();
-                onFeedbackSuccessRef.current = undefined; // Reset after usage
+                onFeedbackSuccessRef.current = undefined;
             }
 
         } catch (error: any) {

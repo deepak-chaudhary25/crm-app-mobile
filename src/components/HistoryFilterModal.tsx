@@ -179,7 +179,7 @@ export const HistoryFilterModal = ({ visible, onClose, onApply, initialFilters }
                             style={[styles.applyBtn, { backgroundColor: colors.primary }]} 
                             onPress={handleApply}
                         >
-                            <Text style={styles.applyText}>Apply Filters</Text>
+                            <Text style={styles.applyText}>Apply</Text>
                         </TouchableOpacity>
                     </View>
                 </View>

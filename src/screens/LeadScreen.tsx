@@ -164,8 +164,7 @@ export const LeadScreen = () => {
     const handleAssignLeads = async (userId: string, reason: string) => {
         try {
             // Call the API
-            await leadsApi.bulkAssign(selectedLeads, userId, reason);
-            console.log(`Assigned ${selectedLeads.length} leads to ${userId} for: ${reason}`);
+            await leadsApi.bulkAssign(selectedLeads, userId, reason);
 
             Alert.alert('Success', `Assigned ${selectedLeads.length} leads successfully!`);
 

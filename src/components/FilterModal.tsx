@@ -205,7 +205,7 @@ export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, 
                         <TouchableOpacity onPress={handleClear} style={styles.clearBtn}>
                             <Text style={[styles.clearText, { color: colors.textSecondary }]}>Clear All</Text>
                         </TouchableOpacity>
-                        <Button title="Apply Filters" onPress={handleApply} style={{ width: '60%' }} />
+                        <Button title="Apply" onPress={handleApply} style={{ width: '60%' }} />
                     </View>
                 </View>
             </View>

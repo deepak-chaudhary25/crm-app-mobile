@@ -1,6 +1,6 @@
 
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Alert } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAppTheme } from '../theme';
@@ -46,6 +46,15 @@ export const LeadHistoryScreen = () => {
     const [callLogs, setCallLogs] = useState<CallLog[]>([]);
     const [interactionLogs, setInteractionLogs] = useState<InteractionLog[]>([]);
     const [loading, setLoading] = useState(false);
+
+    // Pagination
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [isMoreLoading, setIsMoreLoading] = useState(false);
+    const pageRef = useRef(1);
+    const hasMoreRef = useRef(true);
+    const isMoreLoadingRef = useRef(false);
+    const LIMIT = 10;
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [displayName, setDisplayName] = useState<string>(leadName || '');
     const [displayPhone, setDisplayPhone] = useState<string>(leadNumber || '');
@@ -64,34 +73,91 @@ export const LeadHistoryScreen = () => {
         performCall(number, { leadId, name: displayName });
     };
 
-    const loadHistory = async () => {
-        setLoading(true);
+    const loadHistory = async (pageNumber = 1, shouldRefresh = false) => {
+        if (!shouldRefresh && (!hasMoreRef.current || isMoreLoadingRef.current)) return;
+        
+        if (shouldRefresh) {
+            setLoading(true);
+        } else {
+            setIsMoreLoading(true);
+            isMoreLoadingRef.current = true;
+        }
+
         try {
+            const params = {
+                page: pageNumber,
+                limit: LIMIT
+            };
+
             if (logType === 'interactions') {
-                const data = await interactionLogsApi.getByLeadId(leadId);
-                const list: InteractionLog[] = Array.isArray(data) ? data : data?.data || [];
-                setInteractionLogs(list);
-                if (list.length > 0) {
-                    setDisplayName(list[0].leadName || leadName || '');
-                    setDisplayPhone(list[0].leadNumber || leadNumber || '');
+
+                const data = await interactionLogsApi.getByLeadId(leadId, params);
+
+                const newData: InteractionLog[] = Array.isArray(data) ? data : data?.data || [];
+                
+                if (shouldRefresh) {
+                    setInteractionLogs(newData);
+                    setPage(1);
+                    pageRef.current = 1;
+                } else {
+                    setInteractionLogs(prev => [...prev, ...newData]);
+                    setPage(pageNumber);
+                    pageRef.current = pageNumber;
+                }
+                
+                const more = newData.length === LIMIT;
+                setHasMore(more);
+                hasMoreRef.current = more;
+                
+                if (shouldRefresh && newData.length > 0) {
+                    setDisplayName(newData[0].leadName || leadName || '');
+                    setDisplayPhone(newData[0].leadNumber || leadNumber || '');
                 }
             } else {
-                const data = await callLogsApi.getLeadLogs(leadId);
-                const list: CallLog[] = Array.isArray(data) ? data : data?.data || [];
-                setCallLogs(list);
-                if (list.length > 0) {
-                    setDisplayName(list[0].leadName || leadName || '');
-                    setDisplayPhone(list[0].leadNumber || list[0].LeadNumber || leadNumber || '');
+
+                const data = await callLogsApi.getLeadLogs(leadId, params);
+
+                const newData: CallLog[] = Array.isArray(data) ? data : data?.data || [];
+                
+                if (shouldRefresh) {
+                    setCallLogs(newData);
+                    setPage(1);
+                    pageRef.current = 1;
+                } else {
+                    setCallLogs(prev => [...prev, ...newData]);
+                    setPage(pageNumber);
+                    pageRef.current = pageNumber;
+                }
+                
+                const more = newData.length === LIMIT;
+                setHasMore(more);
+                hasMoreRef.current = more;
+                
+                if (shouldRefresh && newData.length > 0) {
+                    setDisplayName(newData[0].leadName || leadName || '');
+                    setDisplayPhone(newData[0].leadNumber || newData[0].LeadNumber || leadNumber || '');
                 }
             }
         } catch (error) {
             console.error('Failed to load lead log history', error);
         } finally {
             setLoading(false);
+            setIsMoreLoading(false);
+            isMoreLoadingRef.current = false;
         }
     };
 
-    useEffect(() => { loadHistory(); }, [leadId, logType]);
+    useEffect(() => { loadHistory(1, true); }, [leadId, logType]);
+
+    const onRefresh = () => {
+        loadHistory(1, true);
+    };
+
+    const handleLoadMore = () => {
+        if (!isMoreLoadingRef.current && hasMoreRef.current && !loading) {
+            loadHistory(pageRef.current + 1, false);
+        }
+    };
 
     const toggleExpand = (id: string) => setExpandedId(prev => prev === id ? null : id);
 
@@ -274,14 +340,23 @@ export const LeadHistoryScreen = () => {
             ) : (
                 <FlatList
                     data={data as any[]}
-                    keyExtractor={(item) => item._id}
+                    keyExtractor={(item, index) => `${item._id || index}-${index}`}
                     renderItem={isInteractions
                         ? renderInteractionItem as any
                         : renderCallItem as any
                     }
                     contentContainerStyle={styles.listContent}
                     showsVerticalScrollIndicator={false}
-                    refreshControl={<RefreshControl refreshing={loading} onRefresh={loadHistory} colors={[colors.primary]} />}
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={() => (
+                        isMoreLoading ? (
+                            <View style={{ paddingVertical: 20 }}>
+                                <ActivityIndicator color={colors.primary} />
+                            </View>
+                        ) : null
+                    )}
+                    refreshControl={<RefreshControl refreshing={loading && data.length === 0} onRefresh={onRefresh} colors={[colors.primary]} />}
                 />
             )}
 

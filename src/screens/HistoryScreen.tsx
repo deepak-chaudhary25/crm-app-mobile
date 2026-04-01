@@ -1,6 +1,5 @@
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Linking, Alert, TouchableWithoutFeedback, ScrollView, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, StatusBar, RefreshControl, TouchableOpacity, Linking, Alert, TouchableWithoutFeedback, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
@@ -55,20 +54,45 @@ export const HistoryScreen = () => {
     const [isGroupFilterModalVisible, setIsGroupFilterModalVisible] = useState(false);
     const [groupFilters, setGroupFilters] = useState<{ group: boolean; userId: string }>({ group: false, userId: '' });
 
+    // Pagination
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [isMoreLoading, setIsMoreLoading] = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
+    const pageRef = useRef(1);
+    const hasMoreRef = useRef(true);
+    const isMoreLoadingRef = useRef(false);
+    const LIMIT = 10;
+
     // Custom Dates
     const [fromDate, setFromDate] = useState<Date>(new Date());
     const [toDate, setToDate] = useState<Date>(new Date());
+    const [appliedFromDate, setAppliedFromDate] = useState<Date>(new Date());
+    const [appliedToDate, setAppliedToDate] = useState<Date>(new Date());
     const [showFromPicker, setShowFromPicker] = useState(false);
     const [showToPicker, setShowToPicker] = useState(false);
     const [showCustomDateModal, setShowCustomDateModal] = useState(false);
+    const [currentStats, setCurrentStats] = useState<any>(null);
+    const [showStatsModal, setShowStatsModal] = useState(false);
 
     // Pass loadHistory as callback to refresh after feedback
     const { handleCall: performCall } = useCallHandlingContext();
 
-    const loadHistory = async (isRefresh = false) => {
-        if (!isRefresh) setLoading(true);
+    const loadHistory = async (pageNumber = 1, shouldRefresh = false) => {
+        if (!shouldRefresh && (!hasMoreRef.current || isMoreLoadingRef.current)) return;
+        
+        if (shouldRefresh) {
+            setLoading(true);
+        } else {
+            setIsMoreLoading(true);
+            isMoreLoadingRef.current = true;
+        }
+        
         try {
-            const params: any = { limit: 50 }; // Fetch first 50 for now
+            const params: any = { 
+                limit: LIMIT,
+                page: pageNumber
+            };
             
             // Apply answered filter
             if (answeredFilter === 'yes') params.answered = true;
@@ -77,40 +101,72 @@ export const HistoryScreen = () => {
             // Apply date filters
             if (dateFilter && dateFilter !== 'all') {
                 if (dateFilter === 'custom') {
-                    // Send date-only strings (YYYY-MM-DD) for custom range
-                    const toDateStr = (d: Date) => d.toISOString().split('T')[0];
-                    params.fromDate = toDateStr(new Date(fromDate));
-                    params.toDate = toDateStr(new Date(toDate));
+                    const toDateStr = (d: Date) => {
+                        const year = d.getFullYear();
+                        const month = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    };
+                    params.dateFilter = 'custom';
+                    params.fromDate = toDateStr(new Date(appliedFromDate));
+                    params.toDate = toDateStr(new Date(appliedToDate));
                 } else {
                     // Pass preset filter string directly to backend
                     params.dateFilter = dateFilter; // today | week | month | year
                 }
             }
 
+            // Apply group filters
+            if (groupFilters.group) {
+                params.group = true;
+                if (groupFilters.userId) {
+                    params.byUserId = groupFilters.userId;
+                }
+            }
+
             let response;
             if (activeTab === 'calls') {
-                console.log('[History] Payload (Call Logs):', params);
+                console.log('Fetching Call logs with payload:', params);
                 response = await callLogsApi.getLogs(params);
+                console.log('Call logs response:', response);
             } else {
-                console.log('[History] Payload (Interaction Logs):', params);
+                console.log('Fetching Interaction logs with payload:', params);
                 response = await interactionLogsApi.getLogs(params);
+                console.log('Interaction logs response:', response);
             }
-            console.log('[History] API Response:', response);
 
             // When filtering by 'answered' on interactions (which don't have this field natively), 
             // the API handles it, but typically it applies strictly to call-logs.
             
-            if (response && response.data) {
-                setHistory(response.data);
-            } else if (Array.isArray(response)) {
-                setHistory(response);
-            } else {
-                setHistory([]);
+            const newData = response?.data || (Array.isArray(response) ? response : []);
+            
+            if (response?.stats) {
+                setCurrentStats(response.stats);
+            } else if (pageNumber === 1) {
+                setCurrentStats(null);
             }
+            
+            if (shouldRefresh) {
+                setHistory(newData);
+                setPage(1);
+                pageRef.current = 1;
+            } else {
+                setHistory(prev => [...prev, ...newData]);
+                setPage(pageNumber);
+                pageRef.current = pageNumber;
+            }
+            
+            const more = newData.length === LIMIT;
+            setHasMore(more);
+            hasMoreRef.current = more;
+            
         } catch (error) {
             console.error('Failed to load history', error);
         } finally {
             setLoading(false);
+            setRefreshing(false);
+            setIsMoreLoading(false);
+            isMoreLoadingRef.current = false;
         }
     };
 
@@ -125,13 +181,13 @@ export const HistoryScreen = () => {
 
     // Re-fetch whenever filters or tab changes
     useEffect(() => {
-        loadHistory();
+        loadHistory(1, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, answeredFilter, dateFilter, fromDate, toDate, groupFilters]);
+    }, [activeTab, answeredFilter, dateFilter, appliedFromDate, appliedToDate, groupFilters]);
 
     useFocusEffect(
         useCallback(() => {
-            loadHistory();
+            loadHistory(1, true);
         // eslint-disable-next-line react-hooks/exhaustive-deps
         }, [activeTab])  // Reload when tab changes focus
     );
@@ -157,6 +213,22 @@ export const HistoryScreen = () => {
 
     // ...
 
+    const handleTabChange = (tab: 'calls' | 'interactions') => {
+        if (tab === activeTab) return;
+        
+        // Reset all filters
+        setAnsweredFilter('all');
+        setDateFilter('all');
+        setGroupFilters({ group: false, userId: '' });
+        setFromDate(new Date());
+        setToDate(new Date());
+        setAppliedFromDate(new Date());
+        setAppliedToDate(new Date());
+        
+        // Change tab (this will trigger the useEffect to loadHistory)
+        setActiveTab(tab);
+    };
+
     const renderTabs = () => (
         <View style={styles.tabsContainer}>
             <TouchableOpacity
@@ -164,7 +236,7 @@ export const HistoryScreen = () => {
                     styles.tab,
                     activeTab === 'calls' && [styles.activeTab, { backgroundColor: colors.primary }]
                 ]}
-                onPress={() => setActiveTab('calls')}
+                onPress={() => handleTabChange('calls')}
             >
                 <Icon 
                     name="call" 
@@ -184,7 +256,7 @@ export const HistoryScreen = () => {
                     styles.tab,
                     activeTab === 'interactions' && [styles.activeTab, { backgroundColor: colors.primary }]
                 ]}
-                onPress={() => setActiveTab('interactions')}
+                onPress={() => handleTabChange('interactions')}
             >
                 <Icon 
                     name="chatbubbles" 
@@ -277,6 +349,9 @@ export const HistoryScreen = () => {
                                         setIsDateDropdownOpen(false);
                                         if (item.id === 'custom') {
                                             setShowCustomDateModal(true);
+                                            // Sync local picker state with currently applied dates when opening
+                                            setFromDate(appliedFromDate);
+                                            setToDate(appliedToDate);
                                         } else {
                                             setDateFilter(item.id as any);
                                         }
@@ -312,6 +387,28 @@ export const HistoryScreen = () => {
                         </TouchableOpacity>
                     </View>
                 )}
+
+                {/* Stats Icon */}
+                <View style={styles.filterGroupIcon}>
+                    <TouchableOpacity
+                        style={[
+                            styles.dropdownTrigger,
+                            {
+                                borderColor: currentStats ? colors.primary : colors.border,
+                                backgroundColor: currentStats ? colors.primary + '15' : colors.inputBackground,
+                                justifyContent: 'center',
+                                paddingHorizontal: scale(12),
+                            }
+                        ]}
+                        onPress={() => setShowStatsModal(true)}
+                    >
+                        <Icon
+                            name="stats-chart"
+                            size={moderateScale(18)}
+                            color={currentStats ? colors.primary : colors.textSecondary}
+                        />
+                    </TouchableOpacity>
+                </View>
             </View>
             </TouchableWithoutFeedback>
         );
@@ -332,6 +429,17 @@ export const HistoryScreen = () => {
             name: item?.leadName,
             stageId: item?.stageId?._id
         });
+    };
+
+    const onRefresh = () => {
+        setRefreshing(true);
+        loadHistory(1, true);
+    };
+
+    const handleLoadMore = () => {
+        if (!isMoreLoadingRef.current && hasMoreRef.current && !loading) {
+            loadHistory(pageRef.current + 1, false);
+        }
     };
 
     const renderItem = ({ item }: { item: CallLog }) => {
@@ -364,6 +472,15 @@ export const HistoryScreen = () => {
                         <View style={styles.tagContainer}>
                             <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>#{item.leadId}</Text>
                         </View>
+                        
+                        {item.stageId?.name && (
+                            <>
+                                <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
+                                <View style={[styles.tagContainer, { backgroundColor: isDark ? '#334155' : '#F1F5F9' }]}>
+                                    <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>{item.stageId.name}</Text>
+                                </View>
+                            </>
+                        )}
                         
                         {activeTab === 'calls' && (
                             <>
@@ -471,12 +588,14 @@ export const HistoryScreen = () => {
                             <TouchableOpacity 
                                 style={[styles.modalActionBtn, { backgroundColor: colors.primary }]} 
                                 onPress={() => {
-                                    setShowCustomDateModal(false);
-                                    if (dateFilter === 'custom') {
-                                        setTimeout(() => loadHistory(true), 0);
-                                    } else {
-                                        setDateFilter('custom');
+                                    if (fromDate > toDate) {
+                                        Alert.alert('Invalid Range', 'The "From" date cannot be after the "To" date.');
+                                        return;
                                     }
+                                    setAppliedFromDate(fromDate);
+                                    setAppliedToDate(toDate);
+                                    setShowCustomDateModal(false);
+                                    setDateFilter('custom');
                                 }}
                             >
                                 <Text style={{ color: '#fff', fontWeight: '600' }}>Apply</Text>
@@ -494,18 +613,27 @@ export const HistoryScreen = () => {
                     title={activeTab === 'calls' ? "No Call History" : "No Interactions"}
                     description={activeTab === 'calls' ? "You haven't made any calls yet." : "No interaction logs found."}
                     actionLabel="Refresh Information"
-                    onAction={() => loadHistory(true)}
+                    onAction={() => loadHistory(1, true)}
                 />
             ) : (
                 <FlatList
                     data={history}
-                    keyExtractor={(item) => item._id}
+                    keyExtractor={(item, index) => `${item._id || index}-${index}`}
                     renderItem={renderItem}
                     contentContainerStyle={styles.listContent}
                     showsVerticalScrollIndicator={false}
                     refreshControl={
-                        <RefreshControl refreshing={loading} onRefresh={() => loadHistory(true)} tintColor={colors.primary} colors={[colors.primary]} />
+                        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} colors={[colors.primary]} />
                     }
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={() => (
+                        isMoreLoading ? (
+                            <View style={{ paddingVertical: 20 }}>
+                                <ActivityIndicator color={colors.primary} />
+                            </View>
+                        ) : null
+                    )}
                 />
             )}
 
@@ -519,6 +647,53 @@ export const HistoryScreen = () => {
                     setIsGroupFilterModalVisible(false);
                 }}
             />
+
+            {/* Stats Modal */}
+            {showStatsModal && (
+                <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }]}>
+                    <View style={[styles.modalContent, { backgroundColor: colors.card, width: '85%' }]}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: scale(20) }}>
+                            <Text style={[styles.modalTitle, { color: colors.textPrimary, marginBottom: 0 }]}>
+                                {activeTab === 'calls' ? 'Call Statistics' : 'Interaction Statistics'}
+                            </Text>
+                            <TouchableOpacity onPress={() => setShowStatsModal(false)}>
+                                <Icon name="close" size={scale(24)} color={colors.textSecondary} />
+                            </TouchableOpacity>
+                        </View>
+                        
+                        {activeTab === 'calls' ? (
+                            <View style={{ gap: scale(16) }}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={{ color: colors.textSecondary, fontSize: moderateScale(15) }}>Total Dials</Text>
+                                    <Text style={{ color: colors.textPrimary, fontSize: moderateScale(15), fontWeight: '600' }}>{currentStats?.totalDials || 0}</Text>
+                                </View>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={{ color: colors.textSecondary, fontSize: moderateScale(15) }}>Total Answered</Text>
+                                    <Text style={{ color: colors.textPrimary, fontSize: moderateScale(15), fontWeight: '600' }}>{currentStats?.totalAnswered || 0}</Text>
+                                </View>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={{ color: colors.textSecondary, fontSize: moderateScale(15) }}>Total Talk Time</Text>
+                                    <Text style={{ color: colors.textPrimary, fontSize: moderateScale(15), fontWeight: '600' }}>{formatDuration(currentStats?.totalTalkTime || 0)}</Text>
+                                </View>
+                            </View>
+                        ) : (
+                            <View style={{ gap: scale(16) }}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={{ color: colors.textSecondary, fontSize: moderateScale(15) }}>Total Interactions</Text>
+                                    <Text style={{ color: colors.textPrimary, fontSize: moderateScale(15), fontWeight: '600' }}>{currentStats?.totalInteractions || 0}</Text>
+                                </View>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                    <Text style={{ color: colors.textSecondary, fontSize: moderateScale(15) }}>Unique Leads</Text>
+                                    <Text style={{ color: colors.textPrimary, fontSize: moderateScale(15), fontWeight: '600' }}>{currentStats?.uniqueLeads || 0}</Text>
+                                </View>
+                            </View>
+                        )}
+                        
+
+                    </View>
+                </View>
+            )}
+
         </SafeAreaView>
     );
 };

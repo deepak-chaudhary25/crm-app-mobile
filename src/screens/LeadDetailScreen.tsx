@@ -1,18 +1,19 @@
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, FlatList, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, FlatList, ActivityIndicator, Modal, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
 import { historyService, Interaction } from '../services/history';
-import { callLogsApi, schedulesApi, leadsApi, usersApi } from '../services/api';
+import { callLogsApi, schedulesApi, leadsApi, usersApi, pcatApi } from '../services/api';
 import { authService } from '../services/auth';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
 import { ScheduleModal } from '../components/ScheduleModal';
 import { useCallHandlingContext } from '../context/CallHandlingContext';
-import { Linking, Alert } from 'react-native';
+import { Linking, Alert, ToastAndroid, Platform } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 
 export const LeadDetailScreen = () => {
     const navigation = useNavigation<any>();
@@ -32,6 +33,14 @@ export const LeadDetailScreen = () => {
 
     const [modalVisible, setModalVisible] = useState(false);
 
+    // PCAT Exam Registration
+    const [ongoingExam, setOngoingExam] = useState<any>(null);
+    const [showRegisterModal, setShowRegisterModal] = useState(false);
+    const [registerLoading, setRegisterLoading] = useState(false);
+    const [registerName, setRegisterName] = useState('');
+    const [registerEmail, setRegisterEmail] = useState('');
+    const [registerNumber, setRegisterNumber] = useState('');
+
     useEffect(() => {
         if (leadId) {
             fetchLeadDetails();
@@ -39,7 +48,51 @@ export const LeadDetailScreen = () => {
             // Nothing to show, go back
             navigation.goBack();
         }
+        // Fetch ongoing PCAT exam
+        fetchOngoingExam();
     }, [leadId]);
+
+    const fetchOngoingExam = async () => {
+        try {
+            const exam = await pcatApi.getOngoingExam();
+            if (exam && exam._id) {
+                setOngoingExam(exam);
+            }
+        } catch (err) {
+            // No ongoing exam or error — button stays disabled
+            setOngoingExam(null);
+        }
+    };
+
+    const openRegisterModal = () => {
+        // Pre-fill from lead data
+        setRegisterName(lead?.name || '');
+        setRegisterEmail(lead?.email || '');
+        setRegisterNumber(lead?.phoneNumber || '');
+        setShowRegisterModal(true);
+    };
+
+    const handleRegister = async () => {
+        if (!registerName.trim() || !registerNumber.trim()) {
+            Alert.alert('Missing Info', 'Name and Phone number are required.');
+            return;
+        }
+        setRegisterLoading(true);
+        try {
+            await pcatApi.registerUser({
+                examId: ongoingExam._id,
+                name: registerName.trim(),
+                email: registerEmail.trim(),
+                number: registerNumber.trim(),
+            });
+            setShowRegisterModal(false);
+            Alert.alert('Success', 'Registered successfully!');
+        } catch (error: any) {
+            Alert.alert('Error', error.message || 'Registration failed');
+        } finally {
+            setRegisterLoading(false);
+        }
+    };
 
     const getInitials = (name: string) => {
         if (!name) return '??';
@@ -71,8 +124,7 @@ export const LeadDetailScreen = () => {
                 const assignedToId = typeof data.assignedTo === 'object' ? data.assignedTo?._id || data.assignedTo?.id : data.assignedTo;
 
                 if (hasUserPermission && typeof assignedToId === 'string') {
-                    const res = await usersApi.getUsers();
-                    console.log('USERS_API_RESPONSE:', JSON.stringify(res).substring(0, 150));
+                    const res = await usersApi.getUsers();
                     // React native APIs sometimes double-wrap in data, or the response IS the array
                     const usersList = Array.isArray(res) ? res : (res?.data?.users || res?.data || []);
 
@@ -133,10 +185,7 @@ export const LeadDetailScreen = () => {
             ...lead,
             // Ensure we pass the numeric ID correctly if it exists in route params under different keys
             leadId: lead.leadId || lead.id,
-            stageId: lead.status // We might need to map status name to ID if we don't have the ID. 
-            // BUT, for feedback, we might need stageId. 
-            // If lead object here is "flat", we might not have stageId. 
-            // We can try to assume it keeps current stage if undefined.
+            stageId: lead.stageId?._id || lead.stageId // Correctly use the _id instead of the mapped name
         });
     };
 
@@ -198,7 +247,18 @@ export const LeadDetailScreen = () => {
 
 
 
-    const InfoRow = ({ icon, label, value }: { icon: string, label: string, value: string }) => (
+    const handleCopyEmail = () => {
+        if (lead.email) {
+            Clipboard.setString(lead.email);
+            if (Platform.OS === 'android') {
+                ToastAndroid.show('Email copied to clipboard', ToastAndroid.SHORT);
+            } else {
+                Alert.alert('Copied', 'Email copied to clipboard');
+            }
+        }
+    };
+
+    const InfoRow = ({ icon, label, value, onCopy }: { icon: string, label: string, value: string, onCopy?: () => void }) => (
         <View style={styles.infoRow}>
             <View style={[styles.iconBox, { backgroundColor: isDark ? '#374151' : '#F3F4F6' }]}>
                 <Icon name={icon} size={moderateScale(20)} color={colors.primary} />
@@ -207,13 +267,18 @@ export const LeadDetailScreen = () => {
                 <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>{label}</Text>
                 <Text style={[styles.infoValue, { color: colors.textPrimary }]}>{value}</Text>
             </View>
+            {onCopy && value !== 'N/A' && (
+                <TouchableOpacity onPress={onCopy} style={{ padding: scale(8) }}>
+                    <Icon name="copy-outline" size={moderateScale(18)} color={colors.primary} />
+                </TouchableOpacity>
+            )}
         </View>
     );
 
 
 
     return (
-        <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
+        <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
             <StatusBar
                 barStyle={isDark ? 'light-content' : 'dark-content'}
                 backgroundColor={colors.background}
@@ -266,6 +331,8 @@ export const LeadDetailScreen = () => {
                     <Icon name="time-outline" size={moderateScale(24)} color={isDark ? '#FB923C' : '#EA580C'} />
                     <Text style={[styles.actionText, { color: isDark ? '#FB923C' : '#EA580C' }]}>History</Text>
                 </TouchableOpacity>
+
+
             </View>
 
             <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -275,11 +342,27 @@ export const LeadDetailScreen = () => {
                     <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
                     <InfoRow icon="call" label="Phone" value={lead.phoneNumber || 'N/A'} />
-                    <InfoRow icon="mail" label="Email" value={lead.email || 'N/A'} />
+                    <InfoRow icon="mail" label="Email" value={lead.email || 'N/A'} onCopy={handleCopyEmail} />
                     {/* Company Removed */}
                     <InfoRow icon="person" label="Assigned To" value={lead.assignedTo} />
                 </View>
             </ScrollView>
+
+            {/* Register for Exam - Bottom Button */}
+            <TouchableOpacity
+                style={[
+                    styles.bottomRegisterBtn,
+                    { backgroundColor: ongoingExam ? colors.primary : (isDark ? '#374151' : '#D1D5DB') },
+                    !ongoingExam && { opacity: 0.5 }
+                ]}
+                onPress={openRegisterModal}
+                disabled={!ongoingExam}
+            >
+                <Icon name="school-outline" size={moderateScale(20)} color="#FFF" />
+                <Text style={styles.bottomRegisterText}>
+                    {ongoingExam ? 'Register for Exam' : 'No Exam Available'}
+                </Text>
+            </TouchableOpacity>
 
             <ScheduleModal
                 visible={modalVisible}
@@ -288,6 +371,79 @@ export const LeadDetailScreen = () => {
                 leadName={lead.name}
             />
 
+            {/* PCAT Registration Modal */}
+            <Modal
+                visible={showRegisterModal}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setShowRegisterModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={[styles.registerModal, { backgroundColor: colors.card }]}>
+                        <View style={styles.registerHeader}>
+                            <Text style={[styles.registerTitle, { color: colors.textPrimary }]}>Register for Exam</Text>
+                            <TouchableOpacity onPress={() => setShowRegisterModal(false)}>
+                                <Icon name="close" size={moderateScale(24)} color={colors.textSecondary} />
+                            </TouchableOpacity>
+                        </View>
+
+                        {ongoingExam?.title && (
+                            <View style={[styles.examBadge, { backgroundColor: isDark ? '#374151' : '#F0F9FF' }]}>
+                                <Icon name="school" size={moderateScale(16)} color={colors.primary} />
+                                <Text style={[styles.examBadgeText, { color: colors.primary }]} numberOfLines={2}>{ongoingExam.title}</Text>
+                            </View>
+                        )}
+
+                        <View style={{ gap: verticalScale(14) }}>
+                            <View>
+                                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Name *</Text>
+                                <TextInput
+                                    style={[styles.registerInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                                    value={registerName}
+                                    onChangeText={setRegisterName}
+                                    placeholder="Enter name"
+                                    placeholderTextColor={colors.textSecondary}
+                                />
+                            </View>
+                            <View>
+                                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Email</Text>
+                                <TextInput
+                                    style={[styles.registerInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                                    value={registerEmail}
+                                    onChangeText={setRegisterEmail}
+                                    placeholder="Enter email"
+                                    placeholderTextColor={colors.textSecondary}
+                                    keyboardType="email-address"
+                                    autoCapitalize="none"
+                                />
+                            </View>
+                            <View>
+                                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Phone *</Text>
+                                <TextInput
+                                    style={[styles.registerInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: colors.inputBackground }]}
+                                    value={registerNumber}
+                                    onChangeText={setRegisterNumber}
+                                    placeholder="Enter phone number"
+                                    placeholderTextColor={colors.textSecondary}
+                                    keyboardType="phone-pad"
+                                />
+                            </View>
+                        </View>
+
+                        <TouchableOpacity
+                            style={[styles.registerBtn, { backgroundColor: colors.primary }, registerLoading && { opacity: 0.7 }]}
+                            onPress={handleRegister}
+                            disabled={registerLoading}
+                        >
+                            {registerLoading ? (
+                                <ActivityIndicator color="#FFF" size="small" />
+                            ) : (
+                                <Text style={styles.registerBtnText}>Register</Text>
+                            )}
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
 
         </SafeAreaView>
     );
@@ -493,5 +649,82 @@ const styles = StyleSheet.create({
     actionText: {
         fontSize: moderateScale(11),
         fontWeight: '600',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    registerModal: {
+        width: '88%',
+        borderRadius: moderateScale(16),
+        padding: scale(20),
+        elevation: 5,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 3.84,
+    },
+    registerHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: verticalScale(16),
+    },
+    registerTitle: {
+        fontSize: moderateScale(18),
+        fontWeight: '700',
+    },
+    examBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: scale(8),
+        padding: scale(10),
+        borderRadius: moderateScale(10),
+        marginBottom: verticalScale(16),
+    },
+    examBadgeText: {
+        fontSize: moderateScale(13),
+        fontWeight: '600',
+        flex: 1,
+    },
+    inputLabel: {
+        fontSize: moderateScale(12),
+        fontWeight: '600',
+        marginBottom: verticalScale(4),
+        textTransform: 'uppercase',
+    },
+    registerInput: {
+        borderWidth: 1,
+        borderRadius: moderateScale(10),
+        paddingHorizontal: scale(12),
+        paddingVertical: verticalScale(10),
+        fontSize: moderateScale(14),
+    },
+    registerBtn: {
+        marginTop: verticalScale(20),
+        paddingVertical: verticalScale(14),
+        borderRadius: moderateScale(12),
+        alignItems: 'center',
+    },
+    registerBtnText: {
+        color: '#FFF',
+        fontSize: moderateScale(15),
+        fontWeight: '700',
+    },
+    bottomRegisterBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: scale(8),
+        marginHorizontal: scale(16),
+        marginBottom: verticalScale(12),
+        paddingVertical: verticalScale(14),
+        borderRadius: moderateScale(12),
+    },
+    bottomRegisterText: {
+        color: '#FFF',
+        fontSize: moderateScale(15),
+        fontWeight: '700',
     },
 });

@@ -11,17 +11,13 @@ let socket: Socket | null = null;
 export const socketService = {
     connect: async () => {
         const token = await authService.getToken();
-        if (!token) {
-            console.log('⚠️ [Socket] No token found, skipping connection.');
+        if (!token) {
             return;
         }
 
-        if (socket?.connected) {
-            console.log('✅ [Socket] Already connected.');
+        if (socket?.connected) {
             return;
-        }
-
-        console.log('🔌 [Socket] Connecting to:', SOCKET_URL);
+        }
 
         // --- CHANGE 1: Updated Configuration ---
         socket = io(SOCKET_URL, {
@@ -38,10 +34,9 @@ export const socketService = {
         });
 
         socket.on('connect', async () => {
-            console.log('✅ [Socket] Connected:', socket?.id);
             const user = await authService.getUser();
             // if (user?.userId) {
-            //     console.log('👉 [Socket] Joining room for user:', user.userId);
+
             //     socket?.emit('join', { userId: user.userId });
             // }
         });
@@ -51,12 +46,10 @@ export const socketService = {
         });
 
         socket.on('disconnect', (reason) => {
-            console.log('⚠️ [Socket] Disconnected:', reason);
         });
 
         // Listen for specific events
         socket.on('lead-schedule-reminder', async (data: any) => {
-            console.log('🔔 [Socket] Reminder Received:', data);
 
             // Construct message
             const title = 'Lead Schedule Reminder';
@@ -86,8 +79,7 @@ export const socketService = {
                                         let url = payload.url;
                                         if (url.includes('{leadId}')) {
                                             url = url.replace('{leadId}', payload.leadId);
-                                        }
-                                        console.log('🔗 [Socket] Opening Deep Link from Reminder:', url);
+                                        }
                                         LinkingModule.openURL(url).catch((err: any) => console.error('Error opening deep link from socket', err));
                                     }
                                 };
@@ -111,8 +103,7 @@ export const socketService = {
     disconnect: () => {
         if (socket) {
             socket.disconnect();
-            socket = null;
-            console.log('🔌 [Socket] Disconnected manually.');
+            socket = null;
         }
     },
 

@@ -35,8 +35,7 @@ export const callLogService = {
     getLastCall: async (targetNumber: string): Promise<CallLogEntry | null> => {
         try {
             const hasPermission = await callLogService.requestPermission();
-            if (!hasPermission) {
-                console.log('Call Log permission denied');
+            if (!hasPermission) {
                 return null;
             }
 
@@ -49,13 +48,13 @@ export const callLogService = {
             const cleanTarget = targetNumber.replace(/\D/g, '');
 
             // Find the most recent call matching our number
-            // We check the last 2 minutes to ensure it's relevant
+            // We check the last 2 hours to ensure even long calls are found
             const now = Date.now();
-            const TWO_MINUTES = 2 * 60 * 1000;
+            const TWO_HOURS = 2 * 60 * 60 * 1000;
 
             const relevantLog = logs.find((log: any) => {
                 const logTime = parseInt(log.timestamp);
-                const isRecent = (now - logTime) < TWO_MINUTES; // Call ended recently
+                const isRecent = (now - logTime) < TWO_HOURS; // Call ended recently
                 const cleanLogNumber = log.phoneNumber.replace(/\D/g, '');
 
                 // Match last 10 digits to ignore country code differences
