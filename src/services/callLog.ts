@@ -15,6 +15,9 @@ export const callLogService = {
         if (Platform.OS !== 'android') return false;
 
         try {
+            const hasPermission = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_CALL_LOG);
+            if (hasPermission) return true;
+
             const granted = await PermissionsAndroid.request(
                 PermissionsAndroid.PERMISSIONS.READ_CALL_LOG,
                 {
@@ -26,8 +29,10 @@ export const callLogService = {
                 }
             );
             return granted === PermissionsAndroid.RESULTS.GRANTED;
-        } catch (err) {
-            console.warn(err);
+        } catch (err: any) {
+            if (!err?.message?.includes('not attached to an Activity')) {
+                console.warn(err);
+            }
             return false;
         }
     },

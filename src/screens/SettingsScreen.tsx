@@ -7,11 +7,24 @@ import { Icon } from '../components/Icon';
 import { authService } from '../services/auth';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
 import { useNavigation, CommonActions } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const SettingsScreen = () => {
     const { colors, themeMode, setThemeMode } = useAppTheme();
     const navigation = useNavigation();
     const [themeModalVisible, setThemeModalVisible] = useState(false);
+    const [callingMethodModalVisible, setCallingMethodModalVisible] = useState(false);
+    const [callingMethod, setCallingMethod] = useState<'IVR' | 'Normal'>('IVR');
+
+    React.useEffect(() => {
+        const loadSettings = async () => {
+            const method = await AsyncStorage.getItem('calling_method');
+            if (method) {
+                setCallingMethod(method as 'IVR' | 'Normal');
+            }
+        };
+        loadSettings();
+    }, []);
 
     const handleLogout = () => {
         Alert.alert(
@@ -77,21 +90,26 @@ export const SettingsScreen = () => {
 
             <ScrollView contentContainerStyle={styles.content}>
                 <View style={[styles.section, { backgroundColor: colors.card }]}>
-                    <SettingItem icon="person-outline" label="Account Profile" onPress={() => { }} />
                     <SettingItem
                         icon="color-palette-outline"
                         label="Appearance"
                         onPress={() => setThemeModalVisible(true)}
                         value={getThemeLabel(themeMode)}
                     />
-                    <SettingItem icon="notifications-outline" label="Notifications" onPress={() => { }} />
-                    {/* <SettingItem icon="lock-closed-outline" label="Security" onPress={() => { }} /> */}
-                    {/* <SettingItem icon="globe-outline" label="Language" onPress={() => { }} /> */}
+                    <SettingItem
+                        icon="call-outline"
+                        label="Calling Method"
+                        onPress={() => setCallingMethodModalVisible(true)}
+                        value={callingMethod}
+                    />
                 </View>
 
                 <View style={[styles.section, { backgroundColor: colors.card, marginTop: 24 }]}>
-                    <SettingItem icon="help-circle-outline" label="Help & Support" onPress={() => { }} />
-                    <SettingItem icon="information-circle-outline" label="About App" onPress={() => { }} />
+                    <SettingItem 
+                        icon="information-circle-outline" 
+                        label="About App" 
+                        onPress={() => Alert.alert('About App', 'CRM App Version 0.0.1\n\nManage leads efficiently with automated follow-ups and IVR tracking.')} 
+                    />
                 </View>
 
                 <View style={[styles.section, { backgroundColor: colors.card, marginTop: 24 }]}>
@@ -139,6 +157,43 @@ export const SettingsScreen = () => {
                                     {getThemeLabel(mode)}
                                 </Text>
                                 {themeMode === mode && <Icon name="checkmark" size={20} color={colors.primary} />}
+                            </TouchableOpacity>
+                        ))}
+                    </View>
+                </TouchableOpacity>
+            </Modal>
+
+            <Modal
+                transparent
+                visible={callingMethodModalVisible}
+                animationType="fade"
+                onRequestClose={() => setCallingMethodModalVisible(false)}
+            >
+                <TouchableOpacity
+                    style={styles.modalOverlay}
+                    activeOpacity={1}
+                    onPress={() => setCallingMethodModalVisible(false)}
+                >
+                    <View style={[styles.modalContent, { backgroundColor: colors.card }]}>
+                        <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Choose Calling Method</Text>
+
+                        {['IVR', 'Normal'].map((method) => (
+                            <TouchableOpacity
+                                key={method}
+                                style={[styles.modalOption, { borderBottomColor: colors.border }]}
+                                onPress={async () => {
+                                    setCallingMethod(method as 'IVR' | 'Normal');
+                                    await AsyncStorage.setItem('calling_method', method);
+                                    setCallingMethodModalVisible(false);
+                                }}
+                            >
+                                <Text style={[
+                                    styles.modalOptionText,
+                                    { color: callingMethod === method ? colors.primary : colors.textPrimary, fontWeight: callingMethod === method ? '700' : '400' }
+                                ]}>
+                                    {method}
+                                </Text>
+                                {callingMethod === method && <Icon name="checkmark" size={20} color={colors.primary} />}
                             </TouchableOpacity>
                         ))}
                     </View>

@@ -2,11 +2,13 @@ import { io, Socket } from 'socket.io-client';
 import { Alert as RNAlert } from 'react-native';
 import { authService } from './auth';
 import { notificationHelper } from '../utils/notificationHelper';
+import notifee, { AndroidImportance } from '@notifee/react-native';
 
 // Replace with your backend URL
 const SOCKET_URL = 'https://crm.upskillab.in';
 
 let socket: Socket | null = null;
+const pendingListeners: { event: string; callback: (data: any) => void }[] = [];
 
 export const socketService = {
     connect: async () => {
@@ -33,12 +35,47 @@ export const socketService = {
             reconnectionDelay: 1000,
         });
 
-        socket.on('connect', async () => {
-            const user = await authService.getUser();
-            // if (user?.userId) {
+        // Attach any listeners that were registered before connection
+        pendingListeners.forEach(({ event, callback }) => {
+            socket?.on(event, callback);
+        });
 
-            //     socket?.emit('join', { userId: user.userId });
-            // }
+        socket.on('connect', async () => {
+            console.log('✅ [Socket] Connected organically to backend endpoint!');
+            
+            const user = await authService.getUser();
+            console.log('✅ [Socket] Extracted user:', user?.userId || 'unknown', 'Attempting to boot absolute Foreground Service...');
+            
+            // Start Foreground Service to keep socket alive
+            try {
+                // Ensure Android 13+ Runtime Permissions are physically granted before attempting Service Boot
+                const permResult = await notifee.requestPermission();
+                console.log('✅ [Socket] Notifee Permission status:', permResult.authorizationStatus);
+
+                const channelId = await notifee.createChannel({
+                    id: 'crm_service',
+                    name: 'CRM Background Service',
+                    vibration: false,
+                    importance: AndroidImportance.LOW,
+                });
+                
+                await notifee.displayNotification({
+                    id: 'crm_socket_service', // Explicitly ID it to lock the Foreground Headless Manager
+                    title: 'CRM Service Active',
+                    body: 'Listening for live events and call logs.',
+                    android: {
+                        channelId,
+                        asForegroundService: true,
+                        ongoing: true,
+                        color: '#2563EB', // Blue to make it look active
+                        // Using a generic icon, usually 'ic_launcher' or your app's small icon
+                        smallIcon: 'ic_launcher', 
+                    },
+                });
+                console.log('✅ [Foreground Service] Successfully deployed and anchored to Notifee Headless Task!');
+            } catch (err) {
+                console.error('❌ [Foreground Service] FATAL Error deploying active service:', err);
+            }
         });
 
         socket.on('connect_error', (err) => {
@@ -46,6 +83,11 @@ export const socketService = {
         });
 
         socket.on('disconnect', (reason) => {
+            console.log('⚠️ [Socket] Disconnected natively. Reason:', reason);
+        });
+        
+        socket.io.on('reconnect_attempt', (num) => {
+            console.log(`[Socket] Reconnect attempt #${num}...`);
         });
 
         // Listen for specific events
@@ -111,12 +153,20 @@ export const socketService = {
     on: (event: string, callback: (data: any) => void) => {
         if (socket) {
             socket.on(event, callback);
+        } else {
+            // Buffer the listener if socket isn't connected yet
+            pendingListeners.push({ event, callback });
         }
     },
 
     off: (event: string, callback?: (data: any) => void) => {
         if (socket) {
             socket.off(event, callback);
+        }
+        // Remove from pending queue if it hasn't fired
+        const index = pendingListeners.findIndex(l => l.event === event && l.callback === callback);
+        if (index > -1) {
+            pendingListeners.splice(index, 1);
         }
     }
 };

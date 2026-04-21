@@ -25,4 +25,12 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     }
 });
 
+// Register a long-running foreground service to keep JS running
+notifee.registerForegroundService((notification) => {
+    return new Promise(() => {
+        // This promise never resolves, keeping the JS engine awake.
+        // It allows socket.io to maintain connections in the background.
+    });
+});
+
 AppRegistry.registerComponent(appName, () => App);

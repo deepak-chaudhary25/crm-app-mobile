@@ -1,30 +1,33 @@
 import React, { useState } from 'react';
-import { Modal, View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView, BackHandler, FlatList, Modal, ToastAndroid } from 'react-native';
 import DatePicker from 'react-native-date-picker';
 import { useAppTheme } from '../theme';
 import { Icon } from './Icon';
 import { Button } from './Button';
-import { CallLogEntry } from '../services/callLog';
-import { stagesApi } from '../services/api';
+import { stagesApi, ivrApi, schedulesApi } from '../services/api';
 import { Stage } from '../types';
 
-interface CallFeedbackModalProps {
+export interface IVREventData {
+    callId: string;
+    leadId: string | number;
+    duration: number | string;
+}
+
+interface IVRFeedbackModalProps {
     visible: boolean;
-    callLog: CallLogEntry | null;
-    leadName: string;
-    currentStageId?: string;
-    onSave: (outcome: string, remarks: string, stageId?: string, scheduleDate?: Date, fallbackDuration?: number, fallbackStatus?: string) => Promise<void> | void;
+    data: IVREventData | null;
+    onSave: (outcome: string, remarks: string, stageId?: string, scheduleDate?: Date, fallbackDurationSecs?: number, fallbackStatus?: string) => Promise<void>;
     onCancel?: () => void;
 }
 
-export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, onSave, onCancel }: CallFeedbackModalProps) => {
+export const IVRFeedbackModal = ({ visible, data, onSave, onCancel }: IVRFeedbackModalProps) => {
     const { colors, isDark } = useAppTheme();
     const [outcome, setOutcome] = useState('');
     const [remarks, setRemarks] = useState('');
-    const [statsStageId, setStatsStageId] = useState<string | undefined>(currentStageId);
+    const [stageId, setStageId] = useState<string | undefined>(undefined);
     const [isSaving, setIsSaving] = useState(false);
 
-    // Fallback Manual Call Details (when OS log fails)
+    // Fallback Manual Call Details (when socket drops)
     const [manualDuration, setManualDuration] = useState('');
     const [manualStatus, setManualStatus] = useState('OUTGOING');
 
@@ -37,27 +40,32 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
     const [showStageDropdown, setShowStageDropdown] = useState(false);
     const [loadingStages, setLoadingStages] = useState(false);
 
-    const prevCallLog = React.useRef(callLog);
-    if (callLog) prevCallLog.current = callLog;
-    const displayCallLog = callLog || prevCallLog.current;
-
     React.useEffect(() => {
         if (visible) {
             fetchStages();
-            setStatsStageId(currentStageId); // Reset to current on open
+            setStageId(undefined);
             setOutcome('');
             setRemarks('');
             setScheduleDate(null);
             setManualDuration('');
             setManualStatus('OUTGOING');
+
+            if (onCancel) {
+                const backAction = () => {
+                    onCancel();
+                    return true;
+                };
+                const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+                return () => backHandler.remove();
+            }
         }
-    }, [visible, currentStageId]);
+    }, [visible, onCancel]);
 
     const fetchStages = async () => {
         setLoadingStages(true);
         try {
-            const data = await stagesApi.getStages();
-            setStages(data);
+            const stagesData = await stagesApi.getStages();
+            setStages(stagesData);
         } catch (error) {
             console.error('Failed to load stages', error);
         } finally {
@@ -65,10 +73,18 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
         }
     };
 
-    const selectedStage = stages.find(s => s._id === statsStageId);
+    const prevData = React.useRef(data);
+    if (data) prevData.current = data;
+    const displayData = data || prevData.current;
+
+    const selectedStage = stages.find(s => s._id === stageId);
     const isJunkOrLost = selectedStage?.name?.toLowerCase().includes('junk') || selectedStage?.name?.toLowerCase().includes('lost');
 
     const handleSave = async () => {
+        if (!stageId) {
+            Alert.alert('Required', 'Please select a stage.');
+            return;
+        }
         if (!outcome.trim()) {
             Alert.alert('Required', 'Please enter a call outcome.');
             return;
@@ -85,7 +101,8 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
         let fallbackDurationSecs = 0;
         let fallbackStatus = 'OUTGOING';
 
-        if (!displayCallLog) {
+        // Triggers fallback UI parsing if server missed socket
+        if (!displayData?.callId) {
             fallbackStatus = manualStatus;
             if (manualStatus === 'OUTGOING') {
                 if (!manualDuration.trim() || isNaN(Number(manualDuration))) {
@@ -98,24 +115,21 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
 
         setIsSaving(true);
         try {
-            await onSave(outcome, remarks, statsStageId, isJunkOrLost ? undefined : (scheduleDate || undefined), fallbackDurationSecs, fallbackStatus);
-            // Only reset after successful save
+            await onSave(outcome, remarks, stageId, isJunkOrLost ? undefined : (scheduleDate || undefined), fallbackDurationSecs, fallbackStatus);
+            // Context handles the success alerts and toasts, so just structurally reset
             setOutcome('');
             setRemarks('');
             setScheduleDate(null);
             setManualDuration('');
-        } catch (e) {
+        } catch (e: any) {
             console.error('Save failed', e);
         } finally {
             setIsSaving(false);
         }
     };
 
-    const formatDuration = (seconds: number) => {
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins}m ${secs}s`;
-    };
+    // We must return null when data is missing so we don't crash on invalid references.
+    if (!visible || !displayData) return null;
 
     return (
         <Modal
@@ -132,39 +146,41 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                 <ScrollView
                     contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}
                     keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled={true}
                 >
                     <View style={[styles.container, { backgroundColor: colors.card, shadowColor: colors.textPrimary }]}>
 
                         {/* Header */}
                         <View style={styles.header}>
-                            <View style={[styles.iconContainer, { backgroundColor: '#DBEAFE' }]}>
-                                <Icon name="call" size={24} color="#2563EB" />
+                            <View style={[styles.iconContainer, { backgroundColor: '#FEE2E2' }]}>
+                                <Icon name="headset-outline" size={24} color="#DC2626" />
                             </View>
-                            <Text style={[styles.title, { color: colors.textPrimary }]}>Call Summary</Text>
+                            <Text style={[styles.title, { color: colors.textPrimary }]}>IVR Feedback</Text>
                         </View>
+
+                        <Text style={styles.strictWarn}>
+                            Mandatory feedback. You cannot dismiss this window until submitted.
+                        </Text>
 
                         {/* Details */}
                         <View style={[styles.detailsContainer, { backgroundColor: isDark ? '#374151' : '#F3F4F6' }]}>
                             <Text style={[styles.detailText, { color: colors.textPrimary }]}>
-                                Lead: <Text style={{ fontWeight: '700' }}>{leadName}</Text>
+                                Lead ID: <Text style={{ fontWeight: '700' }}>{displayData.leadId}</Text>
                             </Text>
-
-                            {displayCallLog ? (
+                            
+                            {displayData.callId ? (
                                 <>
                                     <Text style={[styles.detailText, { color: colors.textPrimary }]}>
-                                        Duration: <Text style={{ fontWeight: '700' }}>{formatDuration(displayCallLog.duration)}</Text>
+                                        Call ID: <Text style={{ fontWeight: '700' }}>{displayData.callId}</Text>
                                     </Text>
                                     <Text style={[styles.detailText, { color: colors.textPrimary }]}>
-                                        Status: <Text style={{ fontWeight: '700', color: displayCallLog.callType === 'MISSED' ? '#EF4444' : '#10B981' }}>{displayCallLog.callType}</Text>
-                                    </Text>
-                                    <Text style={[styles.detailText, { color: colors.textSecondary, fontSize: 12, marginTop: 4 }]}>
-                                        {new Date(Number(displayCallLog.timestamp)).toLocaleString()}
+                                        Duration: <Text style={{ fontWeight: '700' }}>{displayData.duration}s</Text>
                                     </Text>
                                 </>
                             ) : (
                                 <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
                                     <Text style={[styles.detailText, { color: '#EF4444', fontSize: 12, marginBottom: 8, fontWeight: '700' }]}>
-                                        ⚠️ OS Log missing. Please verify details manually:
+                                        ⚠️ Server Sync Missed. Please map manually:
                                     </Text>
                                     
                                     <View style={{ flexDirection: 'row', marginBottom: 12, alignItems: 'center' }}>
@@ -204,8 +220,8 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                         </View>
 
                         {/* Stage Selection */}
-                        <Text style={[styles.label, { color: colors.textSecondary }]}>Lead Stage</Text>
-                        <View>
+                        <Text style={[styles.label, { color: colors.textSecondary }]}>Lead Stage (Required)</Text>
+                        <View style={{zIndex: 1000}}>
                             <TouchableOpacity
                                 style={[styles.dropdownTrigger, { borderColor: colors.border, backgroundColor: colors.background }]}
                                 onPress={() => setShowStageDropdown(!showStageDropdown)}
@@ -224,12 +240,12 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                                                 key={stage._id}
                                                 style={[styles.dropdownItem, { borderBottomColor: colors.border }]}
                                                 onPress={() => {
-                                                    setStatsStageId(stage._id);
+                                                    setStageId(stage._id);
                                                     setShowStageDropdown(false);
                                                 }}
                                             >
                                                 <Text style={{ color: colors.textPrimary, fontSize: 16, flex: 1, marginRight: 8 }}>{stage.name}</Text>
-                                                {statsStageId === stage._id && <Icon name="checkmark" size={18} color={colors.primary} />}
+                                                {stageId === stage._id && <Icon name="checkmark" size={18} color={colors.primary} />}
                                             </TouchableOpacity>
                                         ))}
                                     </ScrollView>
@@ -280,7 +296,7 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
                                 backgroundColor: colors.background,
                                 color: colors.textPrimary,
                                 borderColor: colors.border,
-                                height: 44 // Reduced from 50
+                                height: 44 
                             }]}
                             placeholder="e.g. Interested, Callback, etc."
                             placeholderTextColor={colors.textSecondary}
@@ -306,15 +322,11 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
 
                         {/* Save Button */}
                         <Button
-                            title="Save & Verify"
+                            title="Submit Call Log"
                             onPress={handleSave}
                             loading={isSaving}
-                            style={{ marginBottom: 10 }}
+                            style={{ backgroundColor: '#DC2626', marginBottom: 10 }}
                         />
-
-                        <Text style={[styles.helperText, { color: colors.textSecondary }]}>
-                            You cannot make another call until this is saved.
-                        </Text>
 
                     </View>
                 </ScrollView>
@@ -326,13 +338,13 @@ export const CallFeedbackModal = ({ visible, callLog, leadName, currentStageId, 
 const styles = StyleSheet.create({
     overlay: {
         flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.6)',
+        backgroundColor: 'rgba(0,0,0,0.85)', // Darker overlay for strict mode
         justifyContent: 'center',
         padding: 20,
     },
     container: {
         borderRadius: 20,
-        padding: 16, // Reduced from 20
+        padding: 16, 
         elevation: 10,
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.2,
@@ -341,10 +353,16 @@ const styles = StyleSheet.create({
     header: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginBottom: 16, // Reduced from 20
+        marginBottom: 8, 
+    },
+    strictWarn: {
+        color: '#DC2626',
+        fontSize: 12,
+        fontWeight: 'bold',
+        marginBottom: 16,
     },
     iconContainer: {
-        width: 36, // Reduced from 40
+        width: 36, 
         height: 36,
         borderRadius: 18,
         alignItems: 'center',
@@ -352,34 +370,34 @@ const styles = StyleSheet.create({
         marginRight: 10,
     },
     title: {
-        fontSize: 18, // Reduced from 20
+        fontSize: 18, 
         fontWeight: '800',
     },
     detailsContainer: {
         borderRadius: 12,
-        padding: 12, // Reduced from 16
-        marginBottom: 16, // Reduced from 20
+        padding: 12, 
+        marginBottom: 16, 
     },
     detailText: {
-        fontSize: 14, // Reduced from 15
+        fontSize: 14, 
         marginBottom: 4,
     },
     label: {
         fontSize: 12,
         fontWeight: '700',
-        marginBottom: 6, // Reduced from 8
+        marginBottom: 6, 
         textTransform: 'uppercase',
     },
     input: {
-        height: 80, // Reduced from 100
+        height: 80, 
         borderRadius: 12,
         borderWidth: 1,
-        padding: 10, // Reduced from 12
+        padding: 10, 
         fontSize: 14,
-        marginBottom: 16, // Reduced from 20
+        marginBottom: 16, 
     },
     saveBtn: {
-        height: 48, // Reduced from 50
+        height: 48, 
         borderRadius: 24,
         alignItems: 'center',
         justifyContent: 'center',
@@ -390,20 +408,15 @@ const styles = StyleSheet.create({
         fontSize: 15,
         fontWeight: '700',
     },
-    helperText: {
-        textAlign: 'center',
-        fontSize: 11,
-        fontStyle: 'italic',
-    },
     dropdownTrigger: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: 10, // Reduced from 12
+        padding: 10, 
         borderRadius: 12,
         borderWidth: 1,
-        marginBottom: 4,
-        minHeight: 44, // Reduced from 50
+        marginBottom: 16,
+        minHeight: 44, 
     },
     dropdownList: {
         marginTop: 4,
@@ -411,19 +424,19 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderRadius: 12,
         padding: 4,
-        maxHeight: 200, // Reduced max height
+        maxHeight: 200, 
     },
     dropdownItem: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingVertical: 12, // Reduced from 14
+        paddingVertical: 12, 
         paddingHorizontal: 12,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     statusTab: {
         flex: 1,
-        paddingVertical: 10,
+        paddingVertical: 8,
         alignItems: 'center',
         justifyContent: 'center',
     }

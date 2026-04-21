@@ -10,7 +10,7 @@ interface LeadProps {
     leadId: string;
     assignedTo: string;
     status: 'New' | 'In Progress' | 'Contacted' | 'Pending' | 'Cold';
-    score: number;
+
     image?: any;
     initials?: string;
     initialsColor?: string;
@@ -22,8 +22,11 @@ interface LeadProps {
     onPressWhatsApp?: () => void;
     onPressCall?: () => void;
     onPressLogCall?: () => void;
-    source?: string;
+    updatedAt?: string;
+    createdAt?: string;
     onPressDetail?: () => void;
+    onPressHistory?: () => void;
+    poolName?: string;
 }
 
 export const LeadCard = ({
@@ -31,19 +34,22 @@ export const LeadCard = ({
     leadId,
     assignedTo,
     status,
-    score,
+
     image,
     initials,
     initialsColor,
     phoneNumber,
     email,
-    source,
+    updatedAt,
+    createdAt,
+    poolName,
     selectable = false,
     isSelected = false,
     onPressWhatsApp,
     onPressCall,
     onPressLogCall,
     onPressDetail,
+    onPressHistory,
     onToggleSelection
 }: LeadProps) => {
     const { colors } = useAppTheme();
@@ -58,14 +64,7 @@ export const LeadCard = ({
         }
     };
 
-    const getScoreColor = (score: number) => {
-        if (score >= 80) return '#10B981'; // Green
-        if (score >= 60) return '#F59E0B'; // Orange
-        return '#EF4444'; // Red
-    };
-
     const statusStyle = getStatusStyles(status);
-    const scoreColor = getScoreColor(score);
 
     const handleCall = () => {
         if (onPressCall) {
@@ -109,20 +108,7 @@ export const LeadCard = ({
 
             {/* ROW 1: Header (Avatar + Name + Status) - Full Width */}
             <View style={styles.headerRow}>
-                {/* Avatar */}
-                <View style={styles.avatarContainer}>
-                    {image ? (
-                        <Image source={image} style={styles.avatar} />
-                    ) : (
-                        <View style={[styles.avatarPlaceholder, { backgroundColor: initialsColor || '#EFEEFC' }]}>
-                            {initials ? (
-                                <Text style={[styles.initials, { color: '#4F46E5' }]}>{initials}</Text>
-                            ) : (
-                                <Icon name="person" size={moderateScale(24)} color="#4F46E5" />
-                            )}
-                        </View>
-                    )}
-                </View>
+
 
                 {/* Main Content */}
                 <View style={styles.mainInfo}>
@@ -142,20 +128,29 @@ export const LeadCard = ({
                             <Text style={[styles.subText, { color: colors.textSecondary }]}>
                                 Assigned: <Text style={{ color: colors.textPrimary, fontWeight: '500' }}>{assignedTo}</Text>
                             </Text>
-                            {source && (
+                            {(updatedAt || createdAt) && (
                                 <Text style={[styles.subText, { color: colors.textSecondary }]}>
-                                    Source: <Text style={{ color: colors.textPrimary, fontWeight: '500' }}>{source}</Text>
+                                    {updatedAt && (
+                                        <>Updated: <Text style={{ color: colors.textPrimary, fontWeight: '500' }}>
+                                            {new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                        </Text></>
+                                    )}
+                                    {updatedAt && createdAt && '  •  '}
+                                    {createdAt && (
+                                        <>Created: <Text style={{ color: colors.textPrimary, fontWeight: '500' }}>
+                                            {new Date(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                                        </Text></>
+                                    )}
+                                </Text>
+                            )}
+                            {poolName && (
+                                <Text style={[styles.subText, { color: colors.textPrimary, fontWeight: '500' }]}>
+                                    {poolName}
                                 </Text>
                             )}
                         </View>
 
-                        {/* Score Column (Right Aligned) */}
-                        <View style={styles.scoreContainer}>
-                            <View style={[styles.scoreRing, { borderColor: scoreColor }]}>
-                                <Text style={[styles.scoreValue, { color: colors.textPrimary }]}>{score}</Text>
-                            </View>
-                            <Text style={[styles.scoreLabel, { color: colors.textSecondary }]}>Score</Text>
-                        </View>
+
                     </View>
                 </View>
             </View>
@@ -168,6 +163,7 @@ export const LeadCard = ({
                 <ActionButton icon="call-outline" label="Call" onPress={handleCall} />
                 <ActionButton icon="logo-whatsapp" label="WhatsApp" onPress={onPressWhatsApp} />
                 <ActionButton icon="document-text-outline" label="Log" onPress={onPressLogCall} />
+                <ActionButton icon="time-outline" label="History" onPress={onPressHistory} />
             </View >
 
         </TouchableOpacity >
@@ -177,7 +173,8 @@ export const LeadCard = ({
 const styles = StyleSheet.create({
     card: {
         borderRadius: moderateScale(20),
-        padding: scale(16),
+        paddingVertical: verticalScale(12),
+        paddingHorizontal: scale(16),
         marginBottom: verticalScale(16),
         shadowOffset: { width: 0, height: verticalScale(2) },
         shadowOpacity: 0.08,
@@ -215,7 +212,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         flexWrap: 'wrap',
-        marginBottom: verticalScale(8),
+        marginBottom: verticalScale(4),
     },
     name: {
         fontSize: moderateScale(16),
@@ -245,34 +242,10 @@ const styles = StyleSheet.create({
         fontSize: moderateScale(12),
         marginBottom: verticalScale(2),
     },
-    scoreContainer: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        minWidth: scale(50),
-    },
-    scoreRing: {
-        width: moderateScale(40),
-        height: moderateScale(40),
-        borderRadius: moderateScale(20),
-        borderWidth: 3,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: verticalScale(2),
-    },
-    scoreValue: {
-        fontSize: moderateScale(13),
-        fontWeight: '700',
-    },
-    scoreLabel: {
-        fontSize: moderateScale(10), // Reduced slightly to fit
-        textAlign: 'center',
-        width: '120%', // Allow overflow overlap essentially or just ensure it fits
-        marginLeft: '-10%', // Center hack if width > 100%
-    },
     divider: {
         height: 1,
-        marginTop: verticalScale(12),
-        marginBottom: verticalScale(12),
+        marginTop: verticalScale(8),
+        marginBottom: verticalScale(8),
         opacity: 0.5,
     },
     actionRow: {

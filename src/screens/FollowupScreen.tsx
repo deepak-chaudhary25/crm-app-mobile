@@ -117,7 +117,15 @@ export const FollowupScreen = ({ navigation }: any) => {
     };
 
     const renderItem = ({ item }: { item: any }) => (
-        <View 
+        <TouchableOpacity 
+            activeOpacity={0.8}
+            onPress={() => {
+                navigation.navigate('LeadHistory', { 
+                    leadId: item.leadId, 
+                    leadName: item.leadName || `Lead #${item.leadId}`, 
+                    leadNumber: item.leadNumber 
+                });
+            }}
             style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}
         >
             <View style={styles.cardHeader}>
@@ -125,14 +133,16 @@ export const FollowupScreen = ({ navigation }: any) => {
                     <Icon name="person-outline" size={16} color={colors.primary} />
                     <Text style={[styles.leadIdText, { color: colors.primary }]}>{item.leadName || `Lead #${item.leadId}`}</Text>
                 </View>
-                <View style={[
-                    styles.statusBadge, 
-                    { backgroundColor: item.status === 'overdue' ? '#FEE2E2' : '#E0F2FE' }
-                ]}>
-                    <Text style={[
-                        styles.statusText,
-                        { color: item.status === 'overdue' ? '#EF4444' : '#0EA5E9' }
-                    ]}>{item.status?.toUpperCase() || 'UNKNOWN'}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View style={[
+                        styles.statusBadge, 
+                        { backgroundColor: item.status === 'overdue' ? '#FEE2E2' : '#E0F2FE' }
+                    ]}>
+                        <Text style={[
+                            styles.statusText,
+                            { color: item.status === 'overdue' ? '#EF4444' : '#0EA5E9' }
+                        ]}>{item.status?.toUpperCase() || 'UNKNOWN'}</Text>
+                    </View>
                 </View>
             </View>
             
@@ -178,7 +188,7 @@ export const FollowupScreen = ({ navigation }: any) => {
                     </TouchableOpacity>
                 )}
             </View>
-        </View>
+        </TouchableOpacity>
     );
 
     // Filter Buttons UI

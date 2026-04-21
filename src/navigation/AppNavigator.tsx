@@ -14,7 +14,6 @@ import { LeadHistoryScreen } from '../screens/LeadHistoryScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
 import { FollowupScreen } from '../screens/FollowupScreen';
 
-
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
 

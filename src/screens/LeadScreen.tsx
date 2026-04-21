@@ -7,8 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
 import { LeadCard } from '../components/LeadCard';
-
 import { SkeletonLeadCard } from '../components/SkeletonLeadCard';
+import { LeadListItem } from '../components/LeadListItem';
 import { Loader } from '../components/Loader';
 import { EmptyState } from '../components/EmptyState';
 import { ScheduleModal } from '../components/ScheduleModal';
@@ -411,7 +411,7 @@ export const LeadScreen = () => {
                 leadId: activeManualLogLead.leadId,
                 source,
                 outcome,
-                stageId: stageId || activeManualLogLead.stageId?._id || '',
+                stageId: stageId,
             });
 
             // 2. Schedule Follow-up if selected
@@ -589,29 +589,34 @@ export const LeadScreen = () => {
                         data={leads}
                         keyExtractor={(item) => item._id}
                         renderItem={({ item }) => (
-                            <LeadCard
-                                name={item.name}
-                                leadId={`#${item.leadId}`} // Add # prefix
-                                assignedTo={item.assignedTo?.name || 'Unassigned'}
-                                status={item.stageId?.name as any || 'New'}
-                                score={item.healthScore || 0}
-                                initials={getInitials(item.name)}
-                                initialsColor={getInitialsColor(item.name)}
-                                phoneNumber={item.phone}
-                                email={item.email}
-                                selectable={isSelectionMode}
-                                isSelected={selectedLeads.includes(item._id)}
-                                onToggleSelection={() => toggleSelection(item._id)}
-                                onPressWhatsApp={() => handleWhatsApp(item.phone, item)}
-                                onPressCall={() => handleCall(item.phone, item)}
-                                onPressLogCall={() => {
-                                    setActiveManualLogLead(item);
+                            <LeadListItem
+                                item={item}
+                                isSelectionMode={isSelectionMode}
+                                selectedLeads={selectedLeads}
+                                onToggleSelection={toggleSelection}
+                                onWhatsApp={handleWhatsApp}
+                                onCall={handleCall}
+                                onLogCall={(it) => {
+                                    setActiveManualLogLead(it);
                                     setManualLogModalVisible(true);
                                 }}
-                                onPressDetail={() => handleDetail(item)}
-                                source={item.source}
+                                onDetail={handleDetail}
+                                onHistory={(it) => {
+                                    navigation.navigate('LeadHistory', {
+                                        leadId: it.leadId,
+                                        leadName: it.name,
+                                        leadNumber: it.phone,
+                                        logType: 'calls'
+                                    });
+                                }}
+                                getInitials={getInitials}
+                                getInitialsColor={getInitialsColor}
                             />
                         )}
+                        initialNumToRender={10}
+                        windowSize={5}
+                        maxToRenderPerBatch={10}
+                        removeClippedSubviews={Platform.OS === 'android'}
                         contentContainerStyle={styles.listContent}
                         showsVerticalScrollIndicator={false}
                         refreshing={refreshing}
@@ -666,13 +671,15 @@ export const LeadScreen = () => {
                 )
             }
 
-            <AssignLeadsModal
-                visible={assignModalVisible}
-                count={selectedLeads.length}
-                leads={leads.filter(l => selectedLeads.includes(l._id))}
-                onClose={() => setAssignModalVisible(false)}
-                onAssign={handleAssignLeads}
-            />
+            {assignModalVisible && (
+                <AssignLeadsModal
+                    visible={assignModalVisible}
+                    count={selectedLeads.length}
+                    leads={leads.filter(l => selectedLeads.includes(l._id))}
+                    onClose={() => setAssignModalVisible(false)}
+                    onAssign={handleAssignLeads}
+                />
+            )}
 
             <ScheduleModal
                 visible={modalVisible}
@@ -692,14 +699,15 @@ export const LeadScreen = () => {
                 onSave={handleManualLogSave}
             />
 
-
-            <AddLeadModal
-                visible={addModalVisible}
-                onClose={() => setAddModalVisible(false)}
-                onAdd={handleAddLead}
-                canAssign={canAssign}
-                stages={stages}
-            />
+            {addModalVisible && (
+                <AddLeadModal
+                    visible={addModalVisible}
+                    onClose={() => setAddModalVisible(false)}
+                    onAdd={handleAddLead}
+                    canAssign={canAssign}
+                    stages={stages}
+                />
+            )}
 
             <FilterModal
                 visible={isFilterModalVisible}

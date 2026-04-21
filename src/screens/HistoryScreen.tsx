@@ -11,6 +11,7 @@ import { HistoryFilterModal } from '../components/HistoryFilterModal';
 import { authService } from '../services/auth';
 import { useCallHandlingContext } from '../context/CallHandlingContext';
 import { EmptyState } from '../components/EmptyState';
+import { HistoryListItem } from '../components/HistoryListItem';
 
 interface CallLog {
     _id: string;
@@ -442,84 +443,17 @@ export const HistoryScreen = () => {
         }
     };
 
-    const renderItem = ({ item }: { item: CallLog }) => {
-        const iconInfo = getIconForOutcome(item.outcome, item.duration);
-        const date = new Date(item.createdAt);
-
+    const renderItem = useCallback(({ item }: { item: CallLog }) => {
         return (
-            <TouchableOpacity
-                activeOpacity={0.6}
-                onPress={() => handlePressItem(item)}
-                style={[
-                    styles.listItem,
-                    {
-                        backgroundColor: isDark ? '#1E293B' : '#FFFFFF',
-                        shadowColor: isDark ? '#000' : '#64748B',
-                    }
-                ]}
-            >
-                <View style={styles.itemContent}>
-                    <View style={styles.itemHeader}>
-                        <Text style={[styles.itemName, { color: colors.textPrimary }]} numberOfLines={1}>
-                            {item.leadName || `Lead #${item.leadId}`}
-                        </Text>
-                        <Text style={[styles.itemTime, { color: colors.textSecondary }]}>
-                            {date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} • {date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </Text>
-                    </View>
-
-                    <View style={styles.itemSubHeader}>
-                        <View style={styles.tagContainer}>
-                            <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>#{item.leadId}</Text>
-                        </View>
-                        
-                        {item.stageId?.name && (
-                            <>
-                                <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
-                                <View style={[styles.tagContainer, { backgroundColor: isDark ? '#334155' : '#F1F5F9' }]}>
-                                    <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>{item.stageId.name}</Text>
-                                </View>
-                            </>
-                        )}
-                        
-                        {activeTab === 'calls' && (
-                            <>
-                                <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
-                                <Text style={[styles.itemDetail, { color: colors.textSecondary }]}>{formatDuration(item.duration)}</Text>
-                            </>
-                        )}
-
-                        <Text style={[styles.dotSeparator, { color: colors.textSecondary }]}>•</Text>
-                        <Text style={[styles.callerName, { color: colors.textSecondary }]} numberOfLines={1}>
-                            {item.userId?.name?.split(' ')[0] || 'Unknown'}
-                        </Text>
-                    </View>
-
-                    {item.remark && activeTab === 'calls' && (
-                        <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
-                            <View style={{ marginRight: scale(6) }}>
-                                <Icon name="chatbubble-ellipses-outline" size={moderateScale(12)} color={colors.textSecondary} />
-                            </View>
-                            <Text style={[styles.itemRemark, { color: colors.textSecondary }]} numberOfLines={1}>
-                                {item.remark}
-                            </Text>
-                        </View>
-                    )}
-                    
-                    {activeTab === 'interactions' && (
-                        <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
-                            <View style={{ marginRight: scale(6) }}>
-                                <Icon name={item.source === 'whatsapp' ? 'logo-whatsapp' : 'flash-outline'} size={moderateScale(12)} color={item.source === 'whatsapp' ? '#25D366' : colors.textSecondary} />
-                            </View>
-                            <Text style={[styles.itemRemark, { color: colors.textSecondary }]} numberOfLines={1}>
-                                {item.source ? item.source.charAt(0).toUpperCase() + item.source.slice(1) : 'Unknown'} • {item.outcome || 'No outcome recorded'}
-                            </Text>
-                        </View>
-                    )}
-                </View>
-            </TouchableOpacity>
+            <HistoryListItem
+                item={item}
+                isDark={isDark}
+                colors={colors}
+                activeTab={activeTab}
+                onPressItem={handlePressItem}
+            />
         );
-    };
+    }, [isDark, activeTab, handlePressItem]);
 
     return (
         <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -616,15 +550,19 @@ export const HistoryScreen = () => {
                     onAction={() => loadHistory(1, true)}
                 />
             ) : (
-                <FlatList
-                    data={history}
-                    keyExtractor={(item, index) => `${item._id || index}-${index}`}
-                    renderItem={renderItem}
-                    contentContainerStyle={styles.listContent}
-                    showsVerticalScrollIndicator={false}
-                    refreshControl={
-                        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} colors={[colors.primary]} />
-                    }
+                    <FlatList
+                        data={history}
+                        keyExtractor={(item, index) => `${item._id || index}-${index}`}
+                        renderItem={renderItem}
+                        contentContainerStyle={styles.listContent}
+                        showsVerticalScrollIndicator={false}
+                        initialNumToRender={10}
+                        windowSize={5}
+                        maxToRenderPerBatch={10}
+                        removeClippedSubviews={Platform.OS === 'android'}
+                        refreshControl={
+                            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} colors={[colors.primary]} />
+                        }
                     onEndReached={handleLoadMore}
                     onEndReachedThreshold={0.5}
                     ListFooterComponent={() => (
@@ -638,15 +576,17 @@ export const HistoryScreen = () => {
             )}
 
             {/* Group Filter Modal */}
-            <HistoryFilterModal
-                visible={isGroupFilterModalVisible}
-                onClose={() => setIsGroupFilterModalVisible(false)}
-                initialFilters={groupFilters}
-                onApply={(newFilters) => {
-                    setGroupFilters(newFilters);
-                    setIsGroupFilterModalVisible(false);
-                }}
-            />
+            {isGroupFilterModalVisible && (
+                <HistoryFilterModal
+                    visible={isGroupFilterModalVisible}
+                    onClose={() => setIsGroupFilterModalVisible(false)}
+                    initialFilters={groupFilters}
+                    onApply={(newFilters) => {
+                        setGroupFilters(newFilters);
+                        setIsGroupFilterModalVisible(false);
+                    }}
+                />
+            )}
 
             {/* Stats Modal */}
             {showStatsModal && (

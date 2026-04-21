@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch, Platform, TextInput } from 'react-native';
+import { Modal, View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput } from 'react-native';
+import DatePicker from 'react-native-date-picker';
 import { useAppTheme } from '../theme';
 import { Icon } from './Icon';
-import { Input } from './Input';
 import { Button } from './Button';
 import { scale, verticalScale, moderateScale } from '../utils/responsive';
 
@@ -15,35 +15,90 @@ interface FilterModalProps {
     canViewUsers?: boolean;
 }
 
+const DATE_PRESETS = [
+    { id: 'all', label: 'All Time' },
+    { id: 'today', label: 'Today' },
+    { id: 'week', label: 'This Week' },
+    { id: 'month', label: 'This Month' },
+    { id: 'year', label: 'This Year' },
+    { id: 'custom', label: 'Custom' },
+];
+
 export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, canViewUsers = false }: FilterModalProps) => {
     const { colors, isDark } = useAppTheme();
 
     const [assignedTo, setAssignedTo] = useState('');
     const [isUserDropdownOpen, setIsUserDropdownOpen] = useState(false);
     const [userSearchQuery, setUserSearchQuery] = useState('');
-    const [fromDate, setFromDate] = useState('');
-    const [toDate, setToDate] = useState('');
+
+    // Date filter state
+    const [datePreset, setDatePreset] = useState<string>('all');
+    const [fromDate, setFromDate] = useState<Date>(new Date());
+    const [toDate, setToDate] = useState<Date>(new Date());
+    const [showFromPicker, setShowFromPicker] = useState(false);
+    const [showToPicker, setShowToPicker] = useState(false);
+
+    // Boolean filters
     const [isConnected, setIsConnected] = useState<boolean | null>(null);
     const [isScheduler, setIsScheduler] = useState<boolean | null>(null);
 
     useEffect(() => {
         if (visible) {
             setAssignedTo(initialFilters.assignedTo || '');
-            setFromDate(initialFilters.fromDate || '');
-            setToDate(initialFilters.toDate || '');
-            setIsConnected(initialFilters.connected === 'true' ? true : initialFilters.connected === 'false' ? false : null);
-            setIsScheduler(initialFilters.scheduler === 'true' ? true : initialFilters.scheduler === 'false' ? false : null);
-            setIsScheduler(initialFilters.scheduler === 'true' ? true : initialFilters.scheduler === 'false' ? false : null);
+
+            // Restore date filter state
+            if (initialFilters.dateFilter) {
+                setDatePreset(initialFilters.dateFilter);
+            } else if (initialFilters.fromDate || initialFilters.toDate) {
+                setDatePreset('custom');
+            } else {
+                setDatePreset('all');
+            }
+
+            if (initialFilters.fromDate) {
+                setFromDate(new Date(initialFilters.fromDate));
+            } else {
+                setFromDate(new Date());
+            }
+            if (initialFilters.toDate) {
+                setToDate(new Date(initialFilters.toDate));
+            } else {
+                setToDate(new Date());
+            }
+
+            setIsConnected(initialFilters.connected === 'true' || initialFilters.connected === true ? true : initialFilters.connected === 'false' || initialFilters.connected === false ? false : null);
+            setIsScheduler(initialFilters.scheduler === 'true' || initialFilters.scheduler === true ? true : initialFilters.scheduler === 'false' || initialFilters.scheduler === false ? false : null);
             setIsUserDropdownOpen(false);
             setUserSearchQuery('');
         }
     }, [visible, initialFilters]);
 
+    const formatDateStr = (d: Date) => {
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+
+    const formatDateDisplay = (d: Date) => {
+        return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    };
+
     const handleApply = () => {
         const filters: any = {};
         if (assignedTo) filters.assignedTo = assignedTo;
-        if (fromDate) filters.fromDate = fromDate;
-        if (toDate) filters.toDate = toDate;
+
+        // Date filters
+        if (datePreset !== 'all') {
+            if (datePreset === 'custom') {
+                filters.fromDate = formatDateStr(fromDate);
+                filters.toDate = formatDateStr(toDate);
+                filters.dateFilter = 'custom';
+            } else {
+                filters.dateFilter = datePreset; // today | week | month | year
+            }
+        }
+
         if (isConnected !== null) filters.connected = isConnected;
         if (isScheduler !== null) filters.scheduler = isScheduler;
 
@@ -52,8 +107,9 @@ export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, 
 
     const handleClear = () => {
         setAssignedTo('');
-        setFromDate('');
-        setToDate('');
+        setDatePreset('all');
+        setFromDate(new Date());
+        setToDate(new Date());
         setIsConnected(null);
         setIsScheduler(null);
         setUserSearchQuery('');
@@ -64,13 +120,13 @@ export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, 
             <Text style={[styles.label, { color: colors.textPrimary }]}>{label}</Text>
             <View style={styles.boolOptions}>
                 <TouchableOpacity
-                    style={[styles.boolBtn, value === true && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    style={[styles.boolBtn, { borderColor: colors.border }, value === true && { backgroundColor: colors.primary, borderColor: colors.primary }]}
                     onPress={() => onChange(value === true ? null : true)}
                 >
                     <Text style={[styles.boolBtnText, value === true ? { color: '#FFF' } : { color: colors.textPrimary }]}>Yes</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.boolBtn, value === false && { backgroundColor: colors.primary, borderColor: colors.primary }]}
+                    style={[styles.boolBtn, { borderColor: colors.border }, value === false && { backgroundColor: colors.primary, borderColor: colors.primary }]}
                     onPress={() => onChange(value === false ? null : false)}
                 >
                     <Text style={[styles.boolBtnText, value === false ? { color: '#FFF' } : { color: colors.textPrimary }]}>No</Text>
@@ -172,26 +228,100 @@ export const FilterModal = ({ visible, onClose, onApply, users, initialFilters, 
                             </>
                         )}
 
-                        {/* Date Range */}
+                        {/* Date Range - Horizontal Chips */}
                         <Text style={[styles.sectionTitle, { color: colors.textPrimary, marginTop: verticalScale(16) }]}>Date Range</Text>
-                        <View style={styles.row}>
-                            <View style={{ flex: 1, marginRight: scale(8) }}>
-                                <Input
-                                    label="From (YYYY-MM-DD)"
-                                    value={fromDate}
-                                    onChangeText={setFromDate}
-                                    placeholder="2026-01-01"
+                        <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.dateChipContainer}
+                        >
+                            {DATE_PRESETS.map(preset => {
+                                const isActive = datePreset === preset.id;
+                                return (
+                                    <TouchableOpacity
+                                        key={preset.id}
+                                        style={[
+                                            styles.dateChip,
+                                            {
+                                                backgroundColor: isActive ? colors.primary : (isDark ? '#1E293B' : '#F1F5F9'),
+                                                borderColor: isActive ? colors.primary : colors.border,
+                                            }
+                                        ]}
+                                        onPress={() => setDatePreset(preset.id)}
+                                    >
+                                        <Text style={[
+                                            styles.dateChipText,
+                                            { color: isActive ? '#FFF' : colors.textPrimary }
+                                        ]}>
+                                            {preset.label}
+                                        </Text>
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </ScrollView>
+
+                        {/* Custom Date Pickers (only shown when 'custom' is selected) */}
+                        {datePreset === 'custom' && (
+                            <View style={styles.customDateContainer}>
+                                <View style={styles.datePickerRow}>
+                                    <View style={{ flex: 1, marginRight: scale(8) }}>
+                                        <Text style={[styles.dateLabel, { color: colors.textSecondary }]}>From</Text>
+                                        <TouchableOpacity
+                                            style={[styles.dateButton, { borderColor: colors.border, backgroundColor: isDark ? '#1E293B' : '#F9FAFB' }]}
+                                            onPress={() => setShowFromPicker(true)}
+                                        >
+                                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                <Icon name="calendar-outline" size={16} color={colors.primary} />
+                                                <Text style={[styles.dateButtonText, { color: colors.textPrimary }]}>
+                                                    {formatDateDisplay(fromDate)}
+                                                </Text>
+                                            </View>
+                                        </TouchableOpacity>
+                                    </View>
+                                    <View style={{ flex: 1, marginLeft: scale(8) }}>
+                                        <Text style={[styles.dateLabel, { color: colors.textSecondary }]}>To</Text>
+                                        <TouchableOpacity
+                                            style={[styles.dateButton, { borderColor: colors.border, backgroundColor: isDark ? '#1E293B' : '#F9FAFB' }]}
+                                            onPress={() => setShowToPicker(true)}
+                                        >
+                                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                <Icon name="calendar-outline" size={16} color={colors.primary} />
+                                                <Text style={[styles.dateButtonText, { color: colors.textPrimary }]}>
+                                                    {formatDateDisplay(toDate)}
+                                                </Text>
+                                            </View>
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
+
+                                <DatePicker
+                                    modal
+                                    mode="date"
+                                    open={showFromPicker}
+                                    date={fromDate}
+                                    maximumDate={new Date()}
+                                    onConfirm={(date) => {
+                                        setShowFromPicker(false);
+                                        setFromDate(date);
+                                    }}
+                                    onCancel={() => setShowFromPicker(false)}
+                                    theme={isDark ? 'dark' : 'light'}
+                                />
+                                <DatePicker
+                                    modal
+                                    mode="date"
+                                    open={showToPicker}
+                                    date={toDate}
+                                    maximumDate={new Date()}
+                                    onConfirm={(date) => {
+                                        setShowToPicker(false);
+                                        setToDate(date);
+                                    }}
+                                    onCancel={() => setShowToPicker(false)}
+                                    theme={isDark ? 'dark' : 'light'}
                                 />
                             </View>
-                            <View style={{ flex: 1, marginLeft: scale(8) }}>
-                                <Input
-                                    label="To (YYYY-MM-DD)"
-                                    value={toDate}
-                                    onChangeText={setToDate}
-                                    placeholder="2026-01-31"
-                                />
-                            </View>
-                        </View>
+                        )}
 
                         {/* Boolean Filters */}
                         <View style={{ marginTop: verticalScale(16) }}>
@@ -243,19 +373,6 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         marginBottom: verticalScale(10),
     },
-    userScroll: {
-        marginBottom: verticalScale(8),
-    },
-    userChip: {
-        paddingHorizontal: scale(16),
-        paddingVertical: verticalScale(8),
-        borderRadius: moderateScale(20),
-        marginRight: scale(8),
-    },
-    userChipText: {
-        fontSize: moderateScale(14),
-        fontWeight: '500',
-    },
     dropdownTrigger: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -273,7 +390,6 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderRadius: moderateScale(8),
         marginBottom: verticalScale(16),
-        // maxHeight: verticalScale(200), // Moved to internal ScrollView
         overflow: 'hidden',
     },
     searchContainer: {
@@ -286,13 +402,13 @@ const styles = StyleSheet.create({
     searchInput: {
         flex: 1,
         fontSize: moderateScale(14),
-        padding: 0, // Reset default padding
+        padding: 0,
         height: verticalScale(30),
     },
     dropdownItem: {
         padding: scale(12),
         borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: '#ccc', // fallback
+        borderBottomColor: '#ccc',
     },
     itemTitle: {
         fontSize: moderateScale(16),
@@ -302,10 +418,47 @@ const styles = StyleSheet.create({
         fontSize: moderateScale(12),
         marginTop: verticalScale(2),
     },
-    row: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
+    // Date chip styles
+    dateChipContainer: {
+        paddingBottom: verticalScale(12),
+        gap: scale(8),
     },
+    dateChip: {
+        paddingHorizontal: scale(14),
+        paddingVertical: verticalScale(8),
+        borderRadius: moderateScale(20),
+        borderWidth: 1,
+    },
+    dateChipText: {
+        fontSize: moderateScale(13),
+        fontWeight: '600',
+    },
+    // Custom date picker styles
+    customDateContainer: {
+        marginBottom: verticalScale(8),
+    },
+    datePickerRow: {
+        flexDirection: 'row',
+        gap: scale(12),
+    },
+    dateLabel: {
+        fontSize: moderateScale(12),
+        fontWeight: '600',
+        textTransform: 'uppercase',
+        marginBottom: verticalScale(6),
+    },
+    dateButton: {
+        paddingHorizontal: scale(12),
+        paddingVertical: verticalScale(12),
+        borderWidth: 1,
+        borderRadius: moderateScale(10),
+    },
+    dateButtonText: {
+        fontSize: moderateScale(14),
+        fontWeight: '500',
+        marginLeft: scale(8),
+    },
+    // Boolean filter styles
     boolContainer: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -325,7 +478,6 @@ const styles = StyleSheet.create({
         paddingVertical: verticalScale(6),
         borderRadius: moderateScale(8),
         borderWidth: 1,
-        borderColor: '#E5E7EB',
         marginLeft: scale(8),
     },
     boolBtnText: {

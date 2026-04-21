@@ -43,6 +43,7 @@ export const LeadHistoryScreen = () => {
     const route = useRoute<any>();
     const { leadId, leadName, leadNumber, logType = 'calls' } = route.params;
 
+    const [activeTab, setActiveTab] = useState<'calls' | 'interactions'>(logType);
     const [callLogs, setCallLogs] = useState<CallLog[]>([]);
     const [interactionLogs, setInteractionLogs] = useState<InteractionLog[]>([]);
     const [loading, setLoading] = useState(false);
@@ -89,7 +90,7 @@ export const LeadHistoryScreen = () => {
                 limit: LIMIT
             };
 
-            if (logType === 'interactions') {
+            if (activeTab === 'interactions') {
 
                 const data = await interactionLogsApi.getByLeadId(leadId, params);
 
@@ -147,7 +148,7 @@ export const LeadHistoryScreen = () => {
         }
     };
 
-    useEffect(() => { loadHistory(1, true); }, [leadId, logType]);
+    useEffect(() => { loadHistory(1, true); }, [leadId, activeTab]);
 
     const onRefresh = () => {
         loadHistory(1, true);
@@ -198,9 +199,19 @@ export const LeadHistoryScreen = () => {
                         <Icon name="call" size={moderateScale(18)} color={iconColor} />
                     </View>
                     <View style={styles.headerContent}>
-                        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
-                            {item.outcome || 'Call'}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 4 }}>
+                            <Text style={[styles.title, { color: colors.textPrimary, flex: 1 }]} numberOfLines={1}>
+                                {item.outcome || 'Call'}
+                            </Text>
+                            {(item.outcome && item.outcome.length > 25) ? (
+                                <TouchableOpacity 
+                                    onPress={() => Alert.alert('Full Outcome', item.outcome)}
+                                    style={{ padding: 4, marginLeft: 4 }}
+                                >
+                                    <Icon name="information-circle-outline" size={moderateScale(16)} color={colors.primary} />
+                                </TouchableOpacity>
+                            ) : null}
+                        </View>
                         <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
                             {formatDate(item.createdAt)} • {formatTime(item.createdAt)}
                         </Text>
@@ -230,7 +241,9 @@ export const LeadHistoryScreen = () => {
                             <View style={{ marginTop: verticalScale(12) }}>
                                 <Text style={[styles.detailLabel, { color: colors.textSecondary }]}>Remark</Text>
                                 <View style={[styles.remarkBubble, { backgroundColor: isDark ? '#0F172A' : '#F8FAFC' }]}>
-                                    <Icon name="chatbubble-ellipses-outline" size={moderateScale(14)} color={colors.textSecondary} />
+                                    <View style={{ marginTop: 2 }}>
+                                        <Icon name="chatbubble-ellipses-outline" size={moderateScale(14)} color={colors.textSecondary} />
+                                    </View>
                                     <Text style={[styles.remarkText, { color: colors.textPrimary }]}> {item.remark}</Text>
                                 </View>
                             </View>
@@ -256,9 +269,19 @@ export const LeadHistoryScreen = () => {
                         <Icon name="chatbubbles-outline" size={moderateScale(18)} color="#8B5CF6" />
                     </View>
                     <View style={styles.headerContent}>
-                        <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
-                            {item.outcome || 'Interaction'}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', paddingRight: 4 }}>
+                            <Text style={[styles.title, { color: colors.textPrimary, flex: 1 }]} numberOfLines={1}>
+                                {item.outcome || 'Interaction'}
+                            </Text>
+                            {(item.outcome && item.outcome.length > 25) ? (
+                                <TouchableOpacity 
+                                    onPress={() => Alert.alert('Full Outcome', item.outcome)}
+                                    style={{ padding: 4, marginLeft: 4 }}
+                                >
+                                    <Icon name="information-circle-outline" size={moderateScale(16)} color="#8B5CF6" />
+                                </TouchableOpacity>
+                            ) : null}
+                        </View>
                         <Text style={[styles.timestamp, { color: colors.textSecondary }]}>
                             {formatDate(item.interactionAt)} • {formatTime(item.interactionAt)}
                         </Text>
@@ -293,7 +316,7 @@ export const LeadHistoryScreen = () => {
         );
     };
 
-    const isInteractions = logType === 'interactions';
+    const isInteractions = activeTab === 'interactions';
     const data = isInteractions ? interactionLogs : callLogs;
     const isEmpty = data.length === 0 && !loading;
 
@@ -324,6 +347,22 @@ export const LeadHistoryScreen = () => {
                         <Icon name="call" size={moderateScale(20)} color="#0284C7" />
                     </TouchableOpacity>
                 )}
+            </View>
+
+            {/* Quick Tabs */}
+            <View style={{ flexDirection: 'row', marginHorizontal: scale(16), marginTop: verticalScale(4), backgroundColor: isDark ? '#334155' : '#F1F5F9', borderRadius: moderateScale(10), padding: scale(4) }}>
+                <TouchableOpacity 
+                    style={{ flex: 1, paddingVertical: verticalScale(8), alignItems: 'center', backgroundColor: activeTab === 'calls' ? colors.card : 'transparent', borderRadius: moderateScale(8), shadowColor: activeTab === 'calls' ? '#000' : 'transparent', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: activeTab === 'calls' ? 2 : 0 }}
+                    onPress={() => setActiveTab('calls')}
+                >
+                    <Text style={{ color: activeTab === 'calls' ? colors.textPrimary : colors.textSecondary, fontWeight: activeTab === 'calls' ? '700' : '500', fontSize: moderateScale(13) }}>Call Logs</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                    style={{ flex: 1, paddingVertical: verticalScale(8), alignItems: 'center', backgroundColor: activeTab === 'interactions' ? colors.card : 'transparent', borderRadius: moderateScale(8), shadowColor: activeTab === 'interactions' ? '#000' : 'transparent', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: activeTab === 'interactions' ? 2 : 0 }}
+                    onPress={() => setActiveTab('interactions')}
+                >
+                    <Text style={{ color: activeTab === 'interactions' ? colors.textPrimary : colors.textSecondary, fontWeight: activeTab === 'interactions' ? '700' : '500', fontSize: moderateScale(13) }}>Interactions</Text>
+                </TouchableOpacity>
             </View>
 
             {isEmpty ? (
@@ -424,7 +463,7 @@ const styles = StyleSheet.create({
     detailValue: { fontSize: moderateScale(14), fontWeight: '600' },
     remarkBubble: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         padding: scale(10),
         borderRadius: moderateScale(8),
         marginTop: verticalScale(4),

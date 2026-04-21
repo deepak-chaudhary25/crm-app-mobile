@@ -1,6 +1,6 @@
 
 import axios from 'axios';
-import { Platform } from 'react-native';
+import { Platform, ToastAndroid } from 'react-native';
 import DeviceInfo from 'react-native-device-info';
 import { authService } from './auth';
 
@@ -19,10 +19,10 @@ api.interceptors.request.use(
         const token = await authService.getToken();
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
-        }
-        if (config.data) {
         }
-        if (config.params) {
+        if (config.data) {
+        }
+        if (config.params) {
         }
 
         return config;
@@ -37,17 +37,37 @@ import { navigationRef } from '../navigation/AppNavigator';
 
 // Response Interceptor: Log Response & Handle Errors
 api.interceptors.response.use(
-    (response) => {
-
+    (response) => {
         return response;
     },
     async (error) => {
+        const originalRequest = error.config;
+        const isMutation = originalRequest?.method && ['post', 'put', 'patch', 'delete'].includes(originalRequest.method.toLowerCase());
+
+        // 1-Retry Logic for Mutations specifically (or general networks)
+        if (isMutation && originalRequest && !originalRequest._retry) {
+            // Check if it's a network error (no response) or server error (500+)
+            if (!error.response || error.response.status >= 500) {
+                originalRequest._retry = true;
+                console.log('🔄 [API] Automatically retrying failed mutation (1 attempt)...');
+                try {
+                    const response = await api(originalRequest);
+                    return response;
+                } catch (retryError: any) {
+                    // Retry failed as well
+                    console.error('❌ [API Retry Failed]', retryError.message);
+                    ToastAndroid.show('Network Issue. Request Failed.', ToastAndroid.LONG);
+                    return Promise.reject(retryError);
+                }
+            }
+        }
+
         if (error.response) {
-            console.error('❌ [API Response Error]', error.response.status, error.response.config.url);
+            console.error('❌ [API Response Error]', error.response.status, error.response.config?.url);
             console.error('   Data:', JSON.stringify(error.response.data, null, 2));
 
             // Handle 401 Unauthorized
-            if (error.response.status === 401) {
+            if (error.response.status === 401) {
                 await authService.removeToken();
                 if (navigationRef.isReady()) {
                     navigationRef.navigate('Login' as never);
@@ -55,7 +75,10 @@ api.interceptors.response.use(
             }
         } else {
             console.error('❌ [API Network Error]', error.message);
+            // Show toast for non-mutation network errors as well if needed, but primarily POST concerns us
+            if (!isMutation) ToastAndroid.show('Network Error / No Connection', ToastAndroid.SHORT);
         }
+        
         return Promise.reject(error);
     }
 );
@@ -189,7 +212,7 @@ export const stagesApi = {
 };
 
 export const callLogsApi = {
-    createLog: async (data: { leadId: number; userId: string; duration: number; outcome: string; stageId: string; remark: string; startedAt?: string }) => {
+    createLog: async (data: { leadId: number; userId: string; duration: number; outcome: string; stageId?: string; remark: string; startedAt?: string }) => {
         try {
             const response = await api.post('/call-logs', data);
             return response.data;
@@ -222,7 +245,7 @@ export const callLogsApi = {
 };
 
 export const interactionLogsApi = {
-    createLog: async (data: { leadId: number; source: string; outcome: string; stageId: string }) => {
+    createLog: async (data: { leadId: number; source: string; outcome: string; stageId?: string }) => {
         try {
             const response = await api.post('/interaction-logs', data);
             return response.data;
@@ -281,6 +304,30 @@ export const schedulesApi = {
     }
 };
 
+export const ivrApi = {
+    clickToCall: async (data: { leadId: string | number }) => {
+        try {
+            console.log('[IVR] clickToCall Payload:', data);
+            const response = await api.post('/IVR/click-to-call', data);
+            console.log('[IVR] clickToCall Response:', response.data);
+            return response.data;
+        } catch (error: any) {
+            console.error('[IVR] clickToCall Error:', error.response?.data || error.message);
+            throw error.response?.data || { message: 'Failed to initiate IVR call' };
+        }
+    },
+    submitCallLog: async (data: { callId: string; outcome: string; stageId?: string; remark: string }) => {
+        try {
+            console.log('[IVR] submitCallLog Payload:', data);
+            const response = await api.post('/IVR/submit-call-log', data);
+            console.log('[IVR] submitCallLog Response:', response.data);
+            return response.data;
+        } catch (error: any) {
+            console.error('[IVR] submitCallLog Error:', error.response?.data || error.message);
+            throw error.response?.data || { message: 'Failed to submit IVR call log' };
+        }
+    }
+};
 // Public axios instance (no auth token) for PCAT APIs
 const publicApi = axios.create({
     baseURL: 'https://api.upskillab.com',

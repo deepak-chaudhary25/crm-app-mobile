@@ -176,7 +176,7 @@ export const useCallHandling = ({ onFeedbackSuccess }: UseCallHandlingProps = {}
         try {
             const user = await authService.getUser();
             const userId = user?.userId;
-            const finalStageId = selectedStageId || blockingCall.stageId || '';
+            const finalStageId = selectedStageId || blockingCall.stageId;
 
             if (userId && blockingCall.leadIdNumeric) {
                 let startedAtIso = new Date().toISOString();

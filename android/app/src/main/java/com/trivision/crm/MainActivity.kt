@@ -1,4 +1,4 @@
-package com.crmapp
+package com.trivision.crm
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate

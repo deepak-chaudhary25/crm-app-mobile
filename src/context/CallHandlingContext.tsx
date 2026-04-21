@@ -1,20 +1,39 @@
-
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { AppState, AppStateStatus, Linking, Alert } from 'react-native';
+import { AppState, AppStateStatus, Linking, Alert, ToastAndroid } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { historyService, Interaction } from '../services/history';
 import { callLogService, CallLogEntry } from '../services/callLog';
 import { authService } from '../services/auth';
 import { callLogsApi } from '../services/api';
 import { CallFeedbackModal } from '../components/CallFeedbackModal';
+import { IVRFeedbackModal, IVREventData } from '../components/IVRFeedbackModal';
+import { socketService } from '../services/socket';
+
+export type CallStatus = 'IDLE' | 'CALL_IN_PROGRESS' | 'CALL_COMPLETED_PENDING_FEEDBACK';
+export type CallType = 'MANUAL' | 'IVR';
+
+export interface CallState {
+    status: CallStatus;
+    type: CallType;
+    leadId: string;
+    leadIdNumeric: number;
+    leadName: string;
+    phoneNumber?: string;
+    stageId?: string;
+    scheduleId?: string;
+    callId?: string;
+    duration?: number;
+    startTimestamp: number;
+}
+
+const CALL_STATE_KEY = '@crm_call_state';
 
 interface CallHandlingContextType {
     handleCall: (phoneNumber?: string, lead?: any, onSuccess?: () => void, scheduleId?: string) => Promise<void>;
-    feedbackModalVisible: boolean;
+    callState: CallState | null;
     currentCallLog: CallLogEntry | null;
-    blockingCall: any;
     loading: boolean;
-    setFeedbackModalVisible: (visible: boolean) => void;
+    setCallState: (state: CallState | null) => void;
     handleSaveFeedback: (outcome: string, remarks: string, selectedStageId?: string, scheduleDate?: Date) => Promise<void>;
 }
 
@@ -22,128 +41,164 @@ const CallHandlingContext = createContext<CallHandlingContextType | undefined>(u
 
 export const CallHandlingProvider = ({ children }: { children: React.ReactNode }) => {
     const appState = useRef(AppState.currentState);
-    const lastProcessedCall = useRef<{ phoneNumber: string; timestamp: number } | null>(null);
-    const [blockingCall, setBlockingCall] = useState<any>(null);
-    const [feedbackModalVisible, setFeedbackModalVisible] = useState(false);
+    const evalLock = useRef(false);
+    
+    const [callState, setCallStateLocal] = useState<CallState | null>(null);
     const [currentCallLog, setCurrentCallLog] = useState<CallLogEntry | null>(null);
     const [loading, setLoading] = useState(false);
 
-    // Ref to store the success callback for the CURRENT active call
     const onFeedbackSuccessRef = useRef<(() => void) | undefined>(undefined);
 
-    // Initial Checks
-    useEffect(() => {
-        checkBlockingState();
+    // Idempotent Unified State Writer
+    const setCallState = useCallback(async (newState: CallState | null) => {
+        setCallStateLocal(newState);
+        if (newState) {
+            await AsyncStorage.setItem(CALL_STATE_KEY, JSON.stringify(newState));
+        } else {
+            await AsyncStorage.removeItem(CALL_STATE_KEY);
+            setCurrentCallLog(null);
+        }
+    }, []);
 
-        const subscription = AppState.addEventListener('change', handleAppStateChange);
+    // Idempotent State Evaluation Sweep
+    const evaluateState = async () => {
+        if (evalLock.current) return;
+        evalLock.current = true;
+
+        try {
+            const stored = await AsyncStorage.getItem(CALL_STATE_KEY);
+            if (!stored) {
+                setCallStateLocal(null);
+                return;
+            }
+
+            const parsed: any = JSON.parse(stored);
+            
+            // Backward compatibility: If old state had "Normal", sanitize it immediately to "MANUAL"
+            if (parsed.type === 'Normal') {
+                parsed.type = 'MANUAL';
+            }
+            
+            const state: CallState = parsed;
+            setCallStateLocal(state);
+
+            if (state.status === 'CALL_IN_PROGRESS') {
+                // 1. Check Manual Logs
+                if (state.type === 'MANUAL' && state.phoneNumber) {
+                    const latestLog = await callLogService.getLastCall(state.phoneNumber);
+                    if (latestLog) {
+                        const logTime = parseInt(String(latestLog.timestamp || '0'), 10);
+                        // OS limits match: log must be created after startTimestamp (with 60sec grace window)
+                        if (logTime > state.startTimestamp - 60000) {
+                            
+                            // Mathematical Flatline Detection:
+                            // Android dynamically updates duration while calling. If Date.now() completely outpaces 
+                            // the (logTime + duration), the duration has flatlined and the call is biologically dead.
+                            const estimatedEndTime = logTime + (latestLog.duration * 1000);
+                            const hasFlatlined = Date.now() > estimatedEndTime + 8000; // 8 second physical buffer
+
+                            if (latestLog.duration > 0 && hasFlatlined) {
+                                setCurrentCallLog(latestLog);
+                                await setCallState({ ...state, status: 'CALL_COMPLETED_PENDING_FEEDBACK' });
+                                return;
+                            } else {
+                                console.log('[StateMachine: Info] Call duration is zero or actively tracking real-time. Safely assuming ongoing.');
+                                setCurrentCallLog(latestLog);
+                            }
+                        }
+                    }
+                }
+                
+                // 2. Identify Stale Trackers (>4 Hours) silently
+                if (Date.now() - state.startTimestamp > 4 * 60 * 60 * 1000) {
+                    console.log('[StateMachine: Warning] Stale tracker detected (>4 Hrs). Awaiting user interaction.');
+                }
+            }
+        } catch (error) {
+            console.error('[StateMachine: Error] Evaluation sweep failed', error);
+        } finally {
+            evalLock.current = false;
+        }
+    };
+
+    useEffect(() => {
+        evaluateState();
+
+        const handleCallCompleted = async (data: any) => {
+            if (data?.callId && data?.leadId) {
+                const stored = await AsyncStorage.getItem(CALL_STATE_KEY);
+                if (stored) {
+                    const state: CallState = JSON.parse(stored);
+                    // Match socket strictly against current active IVR tracking
+                    if (state.status === 'CALL_IN_PROGRESS' && state.type === 'IVR') {
+                        if (String(state.leadId) === String(data.leadId) || String(state.leadIdNumeric) === String(data.leadId)) {
+                            console.log('[StateMachine: Receive] IVR Socket Match. CALL_IN_PROGRESS -> CALL_COMPLETED_PENDING_FEEDBACK');
+                            await setCallState({ ...state, status: 'CALL_COMPLETED_PENDING_FEEDBACK', callId: data.callId, duration: data.duration });
+                        }
+                    }
+                }
+            }
+        };
+
+        socketService.on('call-completed', handleCallCompleted);
+        const subscription = AppState.addEventListener('change', (nextAppState) => {
+            if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+                evaluateState();
+            }
+            appState.current = nextAppState;
+        });
+
         return () => {
             subscription.remove();
+            socketService.off('call-completed', handleCallCompleted);
         };
     }, []);
 
-    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
-        if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-            const trackingNumber = await AsyncStorage.getItem('active_call_number');
-            if (trackingNumber) {
-                // Guard: skip if call was initiated very recently (< 5s ago)
-                // This prevents premature checks when the user switches apps during a call
-                const callStartStr = await AsyncStorage.getItem('call_start_time');
-                if (callStartStr) {
-                    const elapsed = Date.now() - parseInt(callStartStr, 10);
-                    if (elapsed < 5000) {
-                        console.log('[CallHandler] App active but call started <5s ago, skipping check');
-                        appState.current = nextAppState;
-                        return;
-                    }
-                }
-                await checkLastCall(trackingNumber);
-            }
-        }
-        appState.current = nextAppState;
-    };
-
-    const checkLastCall = async (targetNumber: string) => {
-        setTimeout(async () => {
-            const log = await callLogService.getLastCall(targetNumber);
-
-            if (log) {
-                // Check if we just processed this number recently (within last 10 seconds)
-                if (lastProcessedCall.current &&
-                    lastProcessedCall.current.phoneNumber === log.phoneNumber &&
-                    (Date.now() - lastProcessedCall.current.timestamp < 10000)) {
-                    return;
-                }
-
-                // Call ended — clean up tracking and show modal
-                await AsyncStorage.removeItem('active_call_number');
-                await AsyncStorage.removeItem('call_start_time');
-
-                // Ensure blockingCall is set, otherwise try to recover it from storage
-                if (!blockingCall) {
-                    const pending = await historyService.getPendingFeedback();
-                    if (pending) {
-                        setBlockingCall(pending);
-                    } else {
-                        console.warn('Could not recover blockingCall in checkLastCall.');
-                    }
-                }
-                setCurrentCallLog(log);
-                setFeedbackModalVisible(true);
-            } else {
-                // No call log found — call may still be ongoing or was cancelled
-                // Only clear if enough time has passed since call was started (>30s = likely a cancel)
-                const callStartStr = await AsyncStorage.getItem('call_start_time');
-                const elapsed = callStartStr ? Date.now() - parseInt(callStartStr, 10) : 0;
-
-                if (elapsed > 30000) {
-                    // Enough time passed but no call log — likely a cancelled/failed call
-                    console.log('[CallHandler] No call log found after 30s+, clearing pending state');
-                    await AsyncStorage.removeItem('active_call_number');
-                    await AsyncStorage.removeItem('call_start_time');
-                    await historyService.clearPendingFeedback();
-                    setBlockingCall(null);
-                } else {
-                    // Call might still be ongoing — do NOT clear anything
-                    console.log('[CallHandler] No call log yet, call may still be ongoing. Keeping tracking alive.');
-                }
-            }
-        }, 1500);
-    };
-
-    const checkBlockingState = async () => {
-        const pending = await historyService.getPendingFeedback();
-
-        if (pending) {
-            setBlockingCall(pending);
-            const log = await callLogService.getLastCall(pending.phoneNumber);
-
-            if (log) {
-                setCurrentCallLog(log);
-                setFeedbackModalVisible(true);
-            } else {
-                // No call log found on app restart/focus
-                // Clear the pending state since it was likely a cancelled attempt
-                await historyService.clearPendingFeedback();
-                setBlockingCall(null);
-            }
-        }
-    };
-
     const handleCall = async (phoneNumber?: string, lead?: any, onSuccess?: () => void, scheduleId?: string) => {
-        // Store the callback for later use when feedback is saved
-        onFeedbackSuccessRef.current = onSuccess;
+        // Enforce Idempotency and run sweep before gating
+        await evaluateState(); 
 
-        const pending = await historyService.getPendingFeedback();
-        if (pending) {
-            Alert.alert(
-                'Action Blocked',
-                `You must complete the feedback for your call with ${pending.leadName} before making a new call.`,
-                [
-                    { text: 'Complete Now', onPress: () => checkBlockingState() },
-                    { text: 'Cancel', style: 'cancel' }
-                ]
-            );
-            return;
+        const currentStored = await AsyncStorage.getItem(CALL_STATE_KEY);
+        if (currentStored) {
+            const parsed: any = JSON.parse(currentStored);
+            if (parsed.type === 'Normal') {
+                parsed.type = 'MANUAL';
+            }
+            const state: CallState = parsed;
+            
+            if (state.status === 'CALL_COMPLETED_PENDING_FEEDBACK') {
+                // The automated sweep just succeeded (or user previously failed to submit).
+                // The definitive React Native Feedback Modal is popping up RIGHT NOW.
+                // Do not overlap an ambiguous Alert over it. Just block the new phone call securely.
+                return;
+            }
+
+            if (state.status === 'CALL_IN_PROGRESS') {
+                // Sweep found no hard evidence of completion. We are in true uncertainty.
+                Alert.alert(
+                    'Unresolved Call Status',
+                    `We couldn't precisely determine the status of your previous call with ${state.leadName}. What happened?`,
+                    [
+                        { 
+                            text: 'Call completed (Submit Feedback)', 
+                            onPress: () => {
+                                setTimeout(() => {
+                                    setCallState({ ...state, status: 'CALL_COMPLETED_PENDING_FEEDBACK' });
+                                }, 300);
+                            }
+                        },
+                        { 
+                            text: 'Call was cancelled (Clear State)', 
+                            style: 'destructive', 
+                            onPress: () => {
+                                setTimeout(() => setCallState(null), 100);
+                            }
+                        },
+                        { text: 'Call is still ongoing', style: 'cancel' }
+                    ]
+                );
+                return;
+            }
         }
 
         if (!phoneNumber) {
@@ -152,148 +207,141 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
         }
 
         let leadIdNumeric = lead?.leadId || lead?.id;
-        if (typeof leadIdNumeric === 'string') {
-            leadIdNumeric = parseInt(leadIdNumeric, 10);
-        }
-
+        if (typeof leadIdNumeric === 'string') leadIdNumeric = parseInt(leadIdNumeric, 10);
+        
         const stageId = lead?.stageId?._id || lead?.stageId;
         const leadName = lead?.name || lead?.leadName || 'Unknown Lead';
         const leadId = lead?._id || lead?.id || 'unknown';
 
-        await historyService.setPendingFeedback(
+        onFeedbackSuccessRef.current = onSuccess;
+
+        const callingMethodRaw = await AsyncStorage.getItem('calling_method') || 'IVR';
+        const resolvedType: CallType = callingMethodRaw === 'Normal' ? 'MANUAL' : 'IVR';
+
+        const newState: CallState = {
+            status: 'CALL_IN_PROGRESS',
+            type: resolvedType,
             leadId,
+            leadIdNumeric,
             leadName,
             phoneNumber,
-            leadIdNumeric,
             stageId,
-            scheduleId
-        );
+            scheduleId,
+            startTimestamp: Date.now()
+        };
 
-        setBlockingCall({
-            leadName,
-            phoneNumber,
-            leadIdNumeric,
-            stageId,
-            leadId,
-            scheduleId
-        });
+        console.log(`[StateMachine: Dispatch] IDLE -> CALL_IN_PROGRESS | Type: ${resolvedType}`);
+        await setCallState(newState);
 
-        await AsyncStorage.setItem('active_call_number', phoneNumber);
-        await AsyncStorage.setItem('call_start_time', Date.now().toString());
-
-        Linking.openURL(`tel:${phoneNumber}`).catch(() => {
-            Alert.alert('Error', 'Unable to open dialer');
-            historyService.clearPendingFeedback();
-            AsyncStorage.removeItem('active_call_number');
-            AsyncStorage.removeItem('call_start_time');
-            setBlockingCall(null);
-            onFeedbackSuccessRef.current = undefined;
-        });
+        if (resolvedType === 'IVR') {
+            try {
+                const { ivrApi } = require('../services/api');
+                ToastAndroid.show(`Connecting IVR: ${leadName}...`, ToastAndroid.SHORT);
+                await ivrApi.clickToCall({ leadId: leadIdNumeric });
+            } catch (err: any) {
+                console.error('[StateMachine: IVR] Failed to initiate', err);
+                ToastAndroid.show(err.message || 'Failed to initiate IVR call', ToastAndroid.LONG);
+                await setCallState(null); 
+            }
+        } else {
+            Linking.openURL(`tel:${phoneNumber}`).catch(() => {
+                Alert.alert('Error', 'Unable to open dialer');
+                setCallState(null);
+            });
+        }
     };
 
-    const handleSaveFeedback = async (outcome: string, remarks: string, selectedStageId?: string, scheduleDate?: Date) => {
-
-        // Recover blockingCall if missing (e.g. app restart)
-        let activeBlockingCall = blockingCall;
-        if (!activeBlockingCall) {
-            console.warn('Missing blockingCall in handleSaveFeedback, attempting recovery...');
-            const pending = await historyService.getPendingFeedback();
-            if (pending) {
-                activeBlockingCall = pending;
-                setBlockingCall(pending);
-            }
-        }
-
-        if (!activeBlockingCall || !currentCallLog) {
-            console.error('Missing blockingCall or currentCallLog even after recovery attempt', { activeBlockingCall, currentCallLog });
-            Alert.alert('Error', 'Could not save feedback: Call context lost.');
-            setFeedbackModalVisible(false);
-            return;
-        }
-
-        const blockingCallToUse = activeBlockingCall;
-
+    const handleSaveFeedback = async (outcome: string, remarks: string, selectedStageId?: string, scheduleDate?: Date, fallbackDuration?: number, fallbackStatus?: string) => {
+        if (!callState) return;
         setLoading(true);
+        const finalStageId = selectedStageId || callState.stageId;
+        
         try {
             const user = await authService.getUser();
             const userId = user?.userId;
-            const finalStageId = selectedStageId || blockingCallToUse.stageId || '';
 
-            if (userId && blockingCallToUse.leadIdNumeric) {
-                let startedAtIso = new Date().toISOString();
+            let duration = fallbackDuration || 0;
+            let startedAtIso = new Date(callState.startTimestamp).toISOString();
+            let finalStatusType = fallbackStatus || 'OUTGOING';
+
+            if (callState.type === 'MANUAL' && currentCallLog) {
+                duration = currentCallLog.duration;
+                finalStatusType = currentCallLog.callType;
                 if (currentCallLog.timestamp) {
                     startedAtIso = new Date(Number(currentCallLog.timestamp)).toISOString();
-                } else if (currentCallLog.dateTime) {
-                    try {
-                        startedAtIso = new Date(currentCallLog.dateTime).toISOString();
-                    } catch (e) {
-                        console.warn('Failed to parse dateTime', currentCallLog.dateTime);
-                    }
                 }
-
-                const payload = {
-                    leadId: blockingCallToUse.leadIdNumeric,
-                    userId,
-                    duration: currentCallLog.duration,
-                    outcome,
-                    stageId: finalStageId,
-                    remark: remarks,
-                    startedAt: startedAtIso
-                };
-
-                const response = await callLogsApi.createLog(payload);
-
-                if (scheduleDate) {
-                    const { schedulesApi } = require('../services/api');
-                    await schedulesApi.createSchedule({
-                        leadId: blockingCallToUse.leadIdNumeric,
-                        scheduledAt: scheduleDate.toISOString(),
-                    });
-                }
-
-                // --- AUTO-COMPLETE SCHEDULE IF CALL WAS TRIGGERED FROM A FOLLOWUP TASK ---
-                if (blockingCallToUse.scheduleId) {
-                    try {
-                        const { schedulesApi } = require('../services/api');
-                        await schedulesApi.completeSchedule(blockingCallToUse.scheduleId);
-                    } catch (taskErr) {
-                        console.error('Failed to auto-complete task:', taskErr);
-                    }
-                }
-
-                Alert.alert('Success', 'Call log & feedback saved successfully.');
-            } else {
-                console.warn('Skipping createLog: Missing userId or leadIdNumeric', { userId, leadIdNumeric: blockingCallToUse.leadIdNumeric });
             }
 
+            if (callState.type === 'IVR') {
+               if (callState.callId) {
+                   const { ivrApi } = require('../services/api');
+                   await ivrApi.submitCallLog({ callId: callState.callId, outcome, stageId: finalStageId, remark: remarks });
+               } else {
+                   // Graceful fallback for submitting manual log if IVR system dropped data
+                   if(userId && callState.leadIdNumeric) {
+                        const payload = {
+                            leadId: callState.leadIdNumeric,
+                            userId,
+                            duration,
+                            outcome,
+                            stageId: finalStageId,
+                            remark: remarks,
+                            startedAt: startedAtIso
+                        };
+                        await callLogsApi.createLog(payload);
+                   }
+               }
+            } else {
+                if (userId && callState.leadIdNumeric) {
+                    const payload = {
+                        leadId: callState.leadIdNumeric,
+                        userId,
+                        duration,
+                        outcome,
+                        stageId: finalStageId,
+                        remark: remarks,
+                        startedAt: startedAtIso
+                    };
+                    await callLogsApi.createLog(payload);
+                }
+            }
+
+            if (scheduleDate) {
+                const { schedulesApi } = require('../services/api');
+                await schedulesApi.createSchedule({
+                    leadId: callState.leadIdNumeric,
+                    scheduledAt: scheduleDate.toISOString(),
+                });
+            }
+
+            if (callState.scheduleId) {
+                try {
+                    const { schedulesApi } = require('../services/api');
+                    await schedulesApi.completeSchedule(callState.scheduleId);
+                } catch (taskErr) {
+                    console.error('Failed to auto-complete task:', taskErr);
+                }
+            }
+
+            // Create interaction log mapping for history physically
             const interaction: Interaction = {
                 id: Date.now().toString(),
-                leadId: blockingCallToUse.leadId,
-                leadName: blockingCallToUse.leadName,
+                leadId: String(callState.leadId),
+                leadName: callState.leadName,
                 type: 'CALL',
-                duration: currentCallLog.duration,
-                status: outcome + ' | ' + currentCallLog.callType,
+                duration: duration,
+                status: outcome + (callState.type === 'MANUAL' ? ' | ' + finalStatusType : ' | IVR'),
                 remarks: remarks,
-                timestamp: currentCallLog.timestamp,
+                timestamp: currentCallLog?.timestamp ? Number(currentCallLog.timestamp) : callState.startTimestamp,
                 date: new Date().toISOString()
             };
 
             await historyService.addInteraction(interaction);
-            await historyService.clearPendingFeedback();
 
-            // Mark this number as processed
-            lastProcessedCall.current = {
-                phoneNumber: blockingCallToUse.phoneNumber,
-                timestamp: Date.now()
-            };
+            Alert.alert('Success', 'Call completed successfully.');
 
-            // Also ensure call tracking is cleared
-            await AsyncStorage.removeItem('active_call_number');
-            await AsyncStorage.removeItem('call_start_time');
-            setBlockingCall(null);
-            setFeedbackModalVisible(false);
-
-            // Execute the success callback (e.g., refresh lead list)
+            await setCallState(null);
+            
             if (onFeedbackSuccessRef.current) {
                 onFeedbackSuccessRef.current();
                 onFeedbackSuccessRef.current = undefined;
@@ -301,7 +349,45 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
 
         } catch (error: any) {
             console.error('Error in handleSaveFeedback:', error);
-            Alert.alert('Error', error.message || 'Failed to submit call log');
+            
+            Alert.alert(
+                'Submission Failed',
+                error.message || 'We could not sync your call feedback to the servers due to a network or backend issue.',
+                [
+                    { 
+                        text: 'Retry Submission', 
+                        style: 'cancel' 
+                    },
+                    { 
+                        text: 'Skip for Now', 
+                        style: 'destructive',
+                        onPress: async () => {
+                            // User rule: "Optionally, the unsynced feedback data can be stored locally for future retry"
+                            try {
+                                const queueStr = await AsyncStorage.getItem('@offline_feedbacks') || '[]';
+                                const queue = JSON.parse(queueStr);
+                                queue.push({
+                                    leadId: callState.leadIdNumeric,
+                                    outcome,
+                                    remark: remarks,
+                                    stageId: finalStageId,
+                                    timestamp: Date.now()
+                                });
+                                await AsyncStorage.setItem('@offline_feedbacks', JSON.stringify(queue));
+                            } catch (e) {
+                                console.error('Failed to stash offline feedback', e);
+                            }
+                            
+                            // Most critical user rule: "system should not block further app usage"
+                            await setCallState(null);
+                            ToastAndroid.show('Saved offline. You may now continue using the app.', ToastAndroid.LONG);
+                        }
+                    }
+                ]
+            );
+            
+            // Throw so local component loading spinners gracefully exit allowing them to press Retry
+            throw error; 
         } finally {
             setLoading(false);
         }
@@ -310,21 +396,31 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
     return (
         <CallHandlingContext.Provider value={{
             handleCall,
-            feedbackModalVisible,
+            callState,
             currentCallLog,
-            blockingCall,
             loading,
-            setFeedbackModalVisible,
+            setCallState,
             handleSaveFeedback
         }}>
             {children}
-            {/* Global Modal Instance */}
             <CallFeedbackModal
-                visible={feedbackModalVisible}
+                visible={callState?.status === 'CALL_COMPLETED_PENDING_FEEDBACK' && callState?.type === 'MANUAL'}
                 callLog={currentCallLog}
-                leadName={blockingCall?.leadName || 'Unknown Lead'}
-                currentStageId={blockingCall?.stageId}
+                leadName={callState?.leadName || 'Unknown Lead'}
+                currentStageId={callState?.stageId}
                 onSave={handleSaveFeedback}
+                onCancel={async () => {
+                    // Backs away from modal natively, reverts strictly back to IN_PROGRESS so gatekeeper protects it
+                    await setCallState({...callState, status: 'CALL_IN_PROGRESS'} as CallState);
+                }}
+            />
+            <IVRFeedbackModal 
+                visible={callState?.status === 'CALL_COMPLETED_PENDING_FEEDBACK' && callState?.type === 'IVR'}
+                data={{ leadId: callState?.leadIdNumeric || 0, duration: callState?.duration || 0, callId: callState?.callId || '' }}
+                onSave={handleSaveFeedback}
+                onCancel={async () => {
+                    await setCallState({...callState, status: 'CALL_IN_PROGRESS'} as CallState);
+                }}
             />
         </CallHandlingContext.Provider>
     );
