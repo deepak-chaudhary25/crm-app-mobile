@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Modal, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppTheme } from '../theme';
 import { Icon } from '../components/Icon';
@@ -96,12 +96,15 @@ export const SettingsScreen = () => {
                         onPress={() => setThemeModalVisible(true)}
                         value={getThemeLabel(themeMode)}
                     />
-                    <SettingItem
-                        icon="call-outline"
-                        label="Calling Method"
-                        onPress={() => setCallingMethodModalVisible(true)}
-                        value={callingMethod}
-                    />
+                    {/* Calling Method is Android-only — iOS always uses IVR */}
+                    {Platform.OS === 'android' && (
+                        <SettingItem
+                            icon="call-outline"
+                            label="Calling Method"
+                            onPress={() => setCallingMethodModalVisible(true)}
+                            value={callingMethod}
+                        />
+                    )}
                 </View>
 
                 <View style={[styles.section, { backgroundColor: colors.card, marginTop: 24 }]}>
@@ -163,6 +166,8 @@ export const SettingsScreen = () => {
                 </TouchableOpacity>
             </Modal>
 
+            {/* Calling Method Modal (Android-only) */}
+            {Platform.OS === 'android' && (
             <Modal
                 transparent
                 visible={callingMethodModalVisible}
@@ -199,6 +204,7 @@ export const SettingsScreen = () => {
                     </View>
                 </TouchableOpacity>
             </Modal>
+            )}
         </SafeAreaView>
     );
 };

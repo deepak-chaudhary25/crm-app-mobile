@@ -1,6 +1,7 @@
 
 import axios from 'axios';
-import { Platform, ToastAndroid } from 'react-native';
+import { Platform } from 'react-native';
+import { showToast } from '../utils/platformUtils';
 import DeviceInfo from 'react-native-device-info';
 import { authService } from './auth';
 
@@ -56,7 +57,7 @@ api.interceptors.response.use(
                 } catch (retryError: any) {
                     // Retry failed as well
                     console.error('❌ [API Retry Failed]', retryError.message);
-                    ToastAndroid.show('Network Issue. Request Failed.', ToastAndroid.LONG);
+                    showToast('Network Issue. Request Failed.', 'LONG');
                     return Promise.reject(retryError);
                 }
             }
@@ -76,7 +77,7 @@ api.interceptors.response.use(
         } else {
             console.error('❌ [API Network Error]', error.message);
             // Show toast for non-mutation network errors as well if needed, but primarily POST concerns us
-            if (!isMutation) ToastAndroid.show('Network Error / No Connection', ToastAndroid.SHORT);
+            if (!isMutation) showToast('Network Error / No Connection', 'SHORT');
         }
         
         return Promise.reject(error);

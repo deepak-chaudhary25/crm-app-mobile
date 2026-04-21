@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { AppState, AppStateStatus, Linking, Alert, ToastAndroid } from 'react-native';
+import { AppState, AppStateStatus, Linking, Alert, Platform } from 'react-native';
+import { showToast } from '../utils/platformUtils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { historyService, Interaction } from '../services/history';
 import { callLogService, CallLogEntry } from '../services/callLog';
@@ -83,8 +84,8 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
             setCallStateLocal(state);
 
             if (state.status === 'CALL_IN_PROGRESS') {
-                // 1. Check Manual Logs
-                if (state.type === 'MANUAL' && state.phoneNumber) {
+                // 1. Check Manual Logs (Android-only — iOS has no call log access)
+                if (Platform.OS === 'android' && state.type === 'MANUAL' && state.phoneNumber) {
                     const latestLog = await callLogService.getLastCall(state.phoneNumber);
                     if (latestLog) {
                         const logTime = parseInt(String(latestLog.timestamp || '0'), 10);
@@ -216,7 +217,9 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
         onFeedbackSuccessRef.current = onSuccess;
 
         const callingMethodRaw = await AsyncStorage.getItem('calling_method') || 'IVR';
-        const resolvedType: CallType = callingMethodRaw === 'Normal' ? 'MANUAL' : 'IVR';
+        // iOS only supports IVR — native call log access is unavailable on iOS.
+        // Force IVR regardless of stored setting to prevent untracked manual calls.
+        const resolvedType: CallType = Platform.OS === 'ios' ? 'IVR' : (callingMethodRaw === 'Normal' ? 'MANUAL' : 'IVR');
 
         const newState: CallState = {
             status: 'CALL_IN_PROGRESS',
@@ -236,11 +239,11 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
         if (resolvedType === 'IVR') {
             try {
                 const { ivrApi } = require('../services/api');
-                ToastAndroid.show(`Connecting IVR: ${leadName}...`, ToastAndroid.SHORT);
+                showToast(`Connecting IVR: ${leadName}...`, 'SHORT');
                 await ivrApi.clickToCall({ leadId: leadIdNumeric });
             } catch (err: any) {
                 console.error('[StateMachine: IVR] Failed to initiate', err);
-                ToastAndroid.show(err.message || 'Failed to initiate IVR call', ToastAndroid.LONG);
+                showToast(err.message || 'Failed to initiate IVR call', 'LONG');
                 await setCallState(null); 
             }
         } else {
@@ -380,7 +383,7 @@ export const CallHandlingProvider = ({ children }: { children: React.ReactNode }
                             
                             // Most critical user rule: "system should not block further app usage"
                             await setCallState(null);
-                            ToastAndroid.show('Saved offline. You may now continue using the app.', ToastAndroid.LONG);
+                            showToast('Saved offline. You may now continue using the app.', 'LONG');
                         }
                     }
                 ]

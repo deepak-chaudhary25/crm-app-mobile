@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { Alert as RNAlert } from 'react-native';
+import { Alert as RNAlert, Platform } from 'react-native';
 import { authService } from './auth';
 import { notificationHelper } from '../utils/notificationHelper';
 import notifee, { AndroidImportance } from '@notifee/react-native';
@@ -46,35 +46,39 @@ export const socketService = {
             const user = await authService.getUser();
             console.log('✅ [Socket] Extracted user:', user?.userId || 'unknown', 'Attempting to boot absolute Foreground Service...');
             
-            // Start Foreground Service to keep socket alive
-            try {
-                // Ensure Android 13+ Runtime Permissions are physically granted before attempting Service Boot
-                const permResult = await notifee.requestPermission();
-                console.log('✅ [Socket] Notifee Permission status:', permResult.authorizationStatus);
+            // Start Foreground Service to keep socket alive (Android-only)
+            // iOS uses AppState listeners for reconnection instead of a foreground service.
+            if (Platform.OS === 'android') {
+                try {
+                    // Ensure Android 13+ Runtime Permissions are physically granted before attempting Service Boot
+                    const permResult = await notifee.requestPermission();
+                    console.log('✅ [Socket] Notifee Permission status:', permResult.authorizationStatus);
 
-                const channelId = await notifee.createChannel({
-                    id: 'crm_service',
-                    name: 'CRM Background Service',
-                    vibration: false,
-                    importance: AndroidImportance.LOW,
-                });
-                
-                await notifee.displayNotification({
-                    id: 'crm_socket_service', // Explicitly ID it to lock the Foreground Headless Manager
-                    title: 'CRM Service Active',
-                    body: 'Listening for live events and call logs.',
-                    android: {
-                        channelId,
-                        asForegroundService: true,
-                        ongoing: true,
-                        color: '#2563EB', // Blue to make it look active
-                        // Using a generic icon, usually 'ic_launcher' or your app's small icon
-                        smallIcon: 'ic_launcher', 
-                    },
-                });
-                console.log('✅ [Foreground Service] Successfully deployed and anchored to Notifee Headless Task!');
-            } catch (err) {
-                console.error('❌ [Foreground Service] FATAL Error deploying active service:', err);
+                    const channelId = await notifee.createChannel({
+                        id: 'crm_service',
+                        name: 'CRM Background Service',
+                        vibration: false,
+                        importance: AndroidImportance.LOW,
+                    });
+                    
+                    await notifee.displayNotification({
+                        id: 'crm_socket_service', // Explicitly ID it to lock the Foreground Headless Manager
+                        title: 'CRM Service Active',
+                        body: 'Listening for live events and call logs.',
+                        android: {
+                            channelId,
+                            asForegroundService: true,
+                            ongoing: true,
+                            color: '#2563EB',
+                            smallIcon: 'ic_launcher',
+                        },
+                    });
+                    console.log('✅ [Foreground Service] Successfully deployed and anchored to Notifee Headless Task!');
+                } catch (err) {
+                    console.error('❌ [Foreground Service] FATAL Error deploying active service:', err);
+                }
+            } else {
+                console.log('✅ [Socket] iOS: Foreground service not applicable. Socket connected.');
             }
         });
 

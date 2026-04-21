@@ -2,7 +2,7 @@
  * @format
  */
 
-import { AppRegistry, Linking } from 'react-native';
+import { AppRegistry, Linking, Platform } from 'react-native';
 import notifee, { EventType } from '@notifee/react-native';
 import App from './App';
 import { name as appName } from './app.json';
@@ -25,12 +25,15 @@ notifee.onBackgroundEvent(async ({ type, detail }) => {
     }
 });
 
-// Register a long-running foreground service to keep JS running
-notifee.registerForegroundService((notification) => {
-    return new Promise(() => {
-        // This promise never resolves, keeping the JS engine awake.
-        // It allows socket.io to maintain connections in the background.
+// Register a long-running foreground service to keep the JS engine alive (Android-only).
+// iOS does not support foreground services — socket reconnection is handled via AppState events.
+if (Platform.OS === 'android') {
+    notifee.registerForegroundService((_notification) => {
+        return new Promise(() => {
+            // This promise never resolves, keeping the JS engine awake.
+            // It allows socket.io to maintain connections in the background.
+        });
     });
-});
+}
 
 AppRegistry.registerComponent(appName, () => App);

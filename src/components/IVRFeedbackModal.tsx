@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView, BackHandler, FlatList, Modal, ToastAndroid } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, KeyboardAvoidingView, Platform, ScrollView, BackHandler, FlatList, Modal } from 'react-native';
 import DatePicker from 'react-native-date-picker';
 import { useAppTheme } from '../theme';
 import { Icon } from './Icon';
